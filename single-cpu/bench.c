@@ -25,7 +25,7 @@ Compile with:
 #include <stb/stb_image_write.h>
 
 #define QOI_IMPLEMENTATION
-#include "qoi-reference.h"
+#include "qoi-sc.h"
 
 // -----------------------------------------------------------------------------
 // Cross platform high resolution timer
@@ -388,7 +388,7 @@ benchmark_result_t benchmark_image(const char* path) {
 											   .height = h,
 											   .channels = channels,
 											   .colorspace = QOI_SRGB},
-								   &encoded_qoi_size);
+								   10, &encoded_qoi_size);
 
 	if (!pixels || !encoded_qoi || !encoded_png) {
 		ERROR("Error encoding %s", path);
@@ -465,7 +465,7 @@ benchmark_result_t benchmark_image(const char* path) {
 												 .height = h,
 												 .channels = channels,
 												 .colorspace = QOI_SRGB},
-									 &enc_size);
+									 10, &enc_size);
 			res.libs[QOI].size = enc_size;
 			free(enc_p);
 		});
