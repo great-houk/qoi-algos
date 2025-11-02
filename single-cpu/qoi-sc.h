@@ -298,7 +298,7 @@ void *qoi_decode(const void *data, int size, qoi_desc *desc, int channels);
 /* -----------------------------------------------------------------------------
 Implementation */
 
-#ifdef QOI_IMPLEMENTATION
+// #ifdef QOI_IMPLEMENTATION
 #include <stdlib.h>
 #include <string.h>
 
@@ -353,7 +353,7 @@ static unsigned int qoi_read_32(const unsigned char *bytes, int *p) {
 	return a << 24 | b << 16 | c << 8 | d;
 }
 
-void *qoi_encode(const void *data, const qoi_desc *desc, int *out_len) {
+void *qoi_encode(const void *data, const qoi_desc *desc, const int num_test_pxs, int *out_len) {
 	int i, max_size, p, run;
 	int px_len, px_end, px_pos, channels;
 	unsigned char *bytes;
@@ -477,6 +477,17 @@ void *qoi_encode(const void *data, const qoi_desc *desc, int *out_len) {
 		px_prev = px;
 	}
 
+	for (i = 0; i < (int)sizeof(qoi_padding); i++) {
+		bytes[p++] = qoi_padding[i];
+	}
+
+	// Add dummy pixel addresses
+	int test_pxs_addr = 0;
+	for (i = 0; i < num_test_pxs; i++) {
+		bytes[p++] = test_pxs_addr++;
+	}
+
+	// Add in second qoi ending padding
 	for (i = 0; i < (int)sizeof(qoi_padding); i++) {
 		bytes[p++] = qoi_padding[i];
 	}
