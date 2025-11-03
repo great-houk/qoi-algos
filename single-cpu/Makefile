@@ -2,7 +2,7 @@
 # Builds the benchmark program using libpng and standard libraries
 
 CC       := gcc
-CFLAGS   := -std=gnu99 -O3 -Wall -Wextra $(shell pkg-config --cflags libpng)
+CFLAGS   := -std=gnu99 -g -O3 -Wall -Wextra $(shell pkg-config --cflags libpng)
 LDFLAGS  := $(shell pkg-config --libs libpng) -lm
 TARGET   := bench
 SRC      := bench.c
@@ -22,6 +22,13 @@ $(TARGET): $(SRC)
 
 run: $(TARGET)
 	./$(TARGET) $(NUM_RUNS) $(IMAGES)
+
+
+run: $(TARGET)
+	gdb ./$(TARGET) 
+	run $(NUM_RUNS) $(IMAGES)
+
+
 
 clean:
 	rm -f $(TARGET)
