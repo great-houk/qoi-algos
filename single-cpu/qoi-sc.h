@@ -232,7 +232,6 @@ how chunks are en-/decoded. */
 #define QOI_SRGB 0
 #define QOI_LINEAR 1
 #define BYTES_PER_CHECKPOINT 1024
-#define MAX_CECKPOINT_PADDING (1024+8) // 30 for the checkpoints then 8 for the padding
 
 
 typedef struct {
@@ -372,19 +371,24 @@ void* qoi_encode(const void* data,
 		return NULL;
 	}
 
-	max_size = desc->width * desc->height * (desc->channels + 1) +
-			   QOI_HEADER_SIZE + sizeof(qoi_padding);
-
 
 	// Checkpoint calculations
-	max_checkpoints = (desc->width * desc->height)/BYTES_PER_CHECKPOINT;
+	int max_checkpoints = (desc->width * desc->height)/BYTES_PER_CHECKPOINT;
 	unsigned int checkpoints[max_checkpoints];
 	unsigned short byte_per_check_counter = 0;
 	unsigned short checkpoint_counter = 0;
 
+	int checkpoint_padding = max_checkpoints + sizeof(qoi_padding); // ending 8 bytes 
+
+	max_size = desc->width * desc->height * (desc->channels + 1) +
+			   QOI_HEADER_SIZE + sizeof(qoi_padding);
+
+
+	
+
 
 	p = 0;
-	bytes = (unsigned char*)QOI_MALLOC(max_size + max_checkpoints);
+	bytes = (unsigned char*)QOI_MALLOC(max_size + checkpoint_padding);
 	if (!bytes) {
 		return NULL;
 	}
@@ -483,7 +487,7 @@ void* qoi_encode(const void* data,
 					bytes[p++] = px.rgba.b;
 					bytes[p++] = px.rgba.a;
 
-					byte_per_check_counter += 5
+					byte_per_check_counter += 5;
 				}
 			}
 
@@ -511,7 +515,7 @@ void* qoi_encode(const void* data,
 
 	// Add checkpoint locations
 	for (i = 0; i < checkpoint_counter; i++) {
-		bytes[p++] = checkpoint_counter[i];
+		bytes[p++] = checkpoints[i];
 	}
 
 	// Add in second qoi ending padding
