@@ -231,6 +231,9 @@ how chunks are en-/decoded. */
 
 #define QOI_SRGB 0
 #define QOI_LINEAR 1
+#define BYTES_PER_CHECKPOINT 1024
+#define MAX_CECKPOINT_PADDING (1024+8) // 30 for the checkpoints then 8 for the padding
+
 
 typedef struct {
 	unsigned int width;
@@ -358,8 +361,10 @@ void* qoi_encode(const void* data,
 	int px_len, px_end, px_pos, channels;
 	unsigned char* bytes;
 	const unsigned char* pixels;
+
 	qoi_rgba_t index[64];
 	qoi_rgba_t px, px_prev;
+
 
 	if (data == NULL || out_len == NULL || desc == NULL || desc->width == 0 ||
 		desc->height == 0 || desc->channels < 3 || desc->channels > 4 ||
@@ -370,8 +375,16 @@ void* qoi_encode(const void* data,
 	max_size = desc->width * desc->height * (desc->channels + 1) +
 			   QOI_HEADER_SIZE + sizeof(qoi_padding);
 
+
+	// Checkpoint calculations
+	max_checkpoints = (desc->width * desc->height)/BYTES_PER_CHECKPOINT;
+	unsigned int checkpoints[max_checkpoints];
+	unsigned short byte_per_check_counter = 0;
+	unsigned short checkpoint_counter = 0;
+
+
 	p = 0;
-	bytes = (unsigned char*)QOI_MALLOC(max_size);
+	bytes = (unsigned char*)QOI_MALLOC(max_size + max_checkpoints);
 	if (!bytes) {
 		return NULL;
 	}
@@ -410,6 +423,8 @@ void* qoi_encode(const void* data,
 			run++;
 			if (run == 62 || px_pos == px_end) {
 				bytes[p++] = QOI_OP_RUN | (run - 1);
+
+				++byte_per_check_counter;
 				run = 0;
 			}
 		} else {
@@ -418,12 +433,16 @@ void* qoi_encode(const void* data,
 			if (run > 0) {
 				bytes[p++] = QOI_OP_RUN | (run - 1);
 				run = 0;
+
+				++byte_per_check_counter;
 			}
 
 			index_pos = QOI_COLOR_HASH(px) & (64 - 1);
 
 			if (index[index_pos].v == px.v) {
 				bytes[p++] = QOI_OP_INDEX | index_pos;
+
+				 ++byte_per_check_counter;
 			} else {
 				index[index_pos] = px;
 
@@ -439,15 +458,23 @@ void* qoi_encode(const void* data,
 						vb < 2) {
 						bytes[p++] = QOI_OP_DIFF | (vr + 2) << 4 |
 									 (vg + 2) << 2 | (vb + 2);
+
+						++byte_per_check_counter;
+						
 					} else if (vg_r > -9 && vg_r < 8 && vg > -33 && vg < 32 &&
 							   vg_b > -9 && vg_b < 8) {
 						bytes[p++] = QOI_OP_LUMA | (vg + 32);
 						bytes[p++] = (vg_r + 8) << 4 | (vg_b + 8);
+
+						byte_per_check_counter += 2;
+
 					} else {
 						bytes[p++] = QOI_OP_RGB;
 						bytes[p++] = px.rgba.r;
 						bytes[p++] = px.rgba.g;
 						bytes[p++] = px.rgba.b;
+						
+						byte_per_check_counter += 4;
 					}
 				} else {
 					bytes[p++] = QOI_OP_RGBA;
@@ -455,20 +482,36 @@ void* qoi_encode(const void* data,
 					bytes[p++] = px.rgba.g;
 					bytes[p++] = px.rgba.b;
 					bytes[p++] = px.rgba.a;
+
+					byte_per_check_counter += 5
+				}
+			}
+
+
+			if(byte_per_check_counter > BYTES_PER_CHECKPOINT) {
+				byte_per_check_counter = 0;
+
+				//Put the first untouched pixed address in array 
+				checkpoints[checkpoint_counter++] = p;
+
+				//Put in ending padding to simulate data end
+				for (i = 0; i < (int)sizeof(qoi_padding); i++) {
+					bytes[p++] = qoi_padding[i];
 				}
 			}
 		}
 		px_prev = px;
+
+
 	}
 
 	for (i = 0; i < (int)sizeof(qoi_padding); i++) {
 		bytes[p++] = qoi_padding[i];
 	}
 
-	// Add dummy pixel addresses
-	int test_pxs_addr = 0;
-	for (i = 0; i < num_test_pxs; i++) {
-		bytes[p++] = test_pxs_addr++;
+	// Add checkpoint locations
+	for (i = 0; i < checkpoint_counter; i++) {
+		bytes[p++] = checkpoint_counter[i];
 	}
 
 	// Add in second qoi ending padding
