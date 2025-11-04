@@ -11,10 +11,11 @@ Compile with:
 	gcc qoibench.c -std=gnu99 -lpng -O3 -o qoibench
 
 */
-
+#include <string.h>
 #include <stdio.h>
 #include <dirent.h>
 #include <png.h>
+#include <stdlib.h>
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_PNG
@@ -24,8 +25,21 @@ Compile with:
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb/stb_image_write.h>
 
-#define QOI_IMPLEMENTATION
+// QOI Single CPU implementation
 #include "qoi-sc.h"
+#include "qoi-reference.h"
+
+//qoi_sc wrappper functions so that we can test both implementations at the same time
+void* qoi_sc_encode(const void* data, const qoi_desc* desc, const int num_test_pxs,
+					int* out_len);
+void* qoi_sc_decode(const void* data, int size, qoi_desc* desc, int channels);
+
+//qoi_reference functions so that we can test both implemntations at the same time
+void* qoi_reference_encode(const void *data, const qoi_desc *desc, int* out_len);
+
+void* qoi_reference_decode(const void *data, int size, qoi_desc *desc, int channels);
+
+
 
 // -----------------------------------------------------------------------------
 // Cross platform high resolution timer
@@ -112,7 +126,7 @@ void libpng_encode_callback(png_structp png_ptr,
 	memcpy(write_data->data + write_data->size, data, length);
 	write_data->size += length;
 }
-
+// defines how we encode png image from raw pixels to memory
 void* libpng_encode(void* pixels, int w, int h, int channels, int* out_len) {
 	png_structp png =
 		png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
@@ -129,12 +143,12 @@ void* libpng_encode(void* pixels, int w, int h, int channels, int* out_len) {
 		ERROR("png_jmpbuf");
 	}
 
-	// Output is 8bit depth, RGBA format.
+	// Output is 8bit depth, RGBA format. header of png
 	png_set_IHDR(png, info, w, h, 8,
 				 channels == 3 ? PNG_COLOR_TYPE_RGB : PNG_COLOR_TYPE_RGBA,
 				 PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT,
 				 PNG_FILTER_TYPE_DEFAULT);
-
+// set rows of png from raw pixels
 	png_bytep row_pointers[h];
 	for (int y = 0; y < h; y++) {
 		row_pointers[y] = ((unsigned char*)pixels + y * w * channels);
@@ -143,11 +157,11 @@ void* libpng_encode(void* pixels, int w, int h, int channels, int* out_len) {
 	libpng_write_t write_data = {.size = 0,
 								 .capacity = w * h * channels,
 								 .data = malloc(w * h * channels)};
-
+// png write setup. define how to write png to memory. set rows and write function
 	png_set_rows(png, info, row_pointers);
 	png_set_write_fn(png, &write_data, libpng_encode_callback, NULL);
 	png_write_png(png, info, PNG_TRANSFORM_IDENTITY, NULL);
-
+// cleanup png info 
 	png_destroy_write_struct(&png, &info);
 
 	*out_len = write_data.size;
@@ -291,17 +305,22 @@ int opt_noencode = 0;
 int opt_norecurse = 0;
 int opt_onlytotals = 0;
 
+//library identifiers to store results
 enum {
 	LIBPNG,
 	STBI,
-	QOI,
+	// QOI,
+	QOI_SC,   //added library of qoi_sc to track its results
+	QOI_REF,    //added library of qoi_ref to track its results 
 	BENCH_COUNT /* must be the last element */
 };
 static const char* const lib_names[BENCH_COUNT] = {
 	// NOTE: pad with spaces so everything lines up properly
 	[LIBPNG] = "libpng: ",
 	[STBI] = "stbi:   ",
-	[QOI] = "qoi:    ",
+	// [QOI] = "qoi:    ",
+	[QOI_SC] = "qoi_sc: ",
+	[QOI_REF] = "qoi_ref:"
 };
 
 typedef struct {
@@ -367,7 +386,8 @@ void benchmark_print_result(benchmark_result_t res) {
 
 benchmark_result_t benchmark_image(const char* path) {
 	int encoded_png_size;
-	int encoded_qoi_size;
+	int encoded_qoi_sc_size;
+	int encoded_qoi_ref_size;
 	int w;
 	int h;
 	int channels;
@@ -383,27 +403,45 @@ benchmark_result_t benchmark_image(const char* path) {
 
 	void* pixels = (void*)stbi_load(path, &w, &h, NULL, channels);
 	void* encoded_png = fload(path, &encoded_png_size);
-	void* encoded_qoi = qoi_encode(pixels,
+	void* encoded_qoi_sc = qoi_sc_encode(pixels,
 								   &(qoi_desc){.width = w,
 											   .height = h,
 											   .channels = channels,
 											   .colorspace = QOI_SRGB},
-								   10, &encoded_qoi_size);
+								   10, &encoded_qoi_sc_size);
 
-	if (!pixels || !encoded_qoi || !encoded_png) {
+	void* encoded_qoi_ref = qoi_reference_encode(pixels,
+								   &(qoi_desc){.width = w,
+											   .height = h,
+											   .channels = channels,
+											   .colorspace = QOI_SRGB},
+											    &encoded_qoi_ref_size);
+
+	if (!pixels || !encoded_qoi_sc|| !encoded_qoi_ref || !encoded_png) {
 		ERROR("Error encoding %s", path);
 	}
 
 	// Verify QOI Output
 
 	if (!opt_noverify) {
-		qoi_desc dc;
-		void* pixels_qoi =
-			qoi_decode(encoded_qoi, encoded_qoi_size, &dc, channels);
-		if (memcmp(pixels, pixels_qoi, w * h * channels) != 0) {
+		// QOI_SC verification
+		qoi_desc dc_sc;
+		//pixels of qoi_sc decoded
+		void* pixels_qoi_sc =
+			qoi_sc_decode(encoded_qoi_sc, encoded_qoi_sc_size, &dc_sc, channels);
+		if (memcmp(pixels, pixels_qoi_sc, w * h * channels) != 0) {
 			ERROR("QOI roundtrip pixel mismatch for %s", path);
 		}
-		free(pixels_qoi);
+		free(pixels_qoi_sc);
+		// QOI_REF verification
+			qoi_desc dc_ref;
+			//pixels of qoi_ref decoded
+		void* pixels_qoi_ref =
+			qoi_reference_decode(encoded_qoi_ref, encoded_qoi_ref_size, &dc_ref, channels);
+		if (memcmp(pixels, pixels_qoi_ref, w * h * channels) != 0) {
+			ERROR("QOI roundtrip pixel mismatch for %s", path);
+		}
+		free(pixels_qoi_ref);
 	}
 
 	benchmark_result_t res = {0};
@@ -433,10 +471,16 @@ benchmark_result_t benchmark_image(const char* path) {
 			});
 		}
 
-		BENCHMARK_FN(opt_nowarmup, opt_runs, res.libs[QOI].decode_time, {
-			qoi_desc desc;
-			void* dec_p = qoi_decode(encoded_qoi, encoded_qoi_size, &desc, 4);
-			free(dec_p);
+		BENCHMARK_FN(opt_nowarmup, opt_runs, res.libs[QOI_SC].decode_time, {
+			//decode qoi_sc decoding benchmark
+			qoi_desc desc_sc;
+			void* dec_p_sc = qoi_sc_decode(encoded_qoi_sc, encoded_qoi_sc_size, &desc_sc, 4);
+			free(dec_p_sc);
+		});
+		BENCHMARK_FN(opt_nowarmup, opt_runs, res.libs[QOI_REF].decode_time, {
+			qoi_desc desc_ref;
+			void* dec_p_ref = qoi_reference_decode(encoded_qoi_ref, encoded_qoi_ref_size, &desc_ref, 4);
+			free(dec_p_ref);
 		});
 	}
 
@@ -458,22 +502,35 @@ benchmark_result_t benchmark_image(const char* path) {
 			});
 		}
 
-		BENCHMARK_FN(opt_nowarmup, opt_runs, res.libs[QOI].encode_time, {
-			int enc_size;
-			void* enc_p = qoi_encode(pixels,
+		BENCHMARK_FN(opt_nowarmup, opt_runs, res.libs[QOI_SC].encode_time, {
+			int enc_size_sc;
+			void* enc_p_sc = qoi_sc_encode(pixels,
 									 &(qoi_desc){.width = w,
 												 .height = h,
 												 .channels = channels,
 												 .colorspace = QOI_SRGB},
-									 10, &enc_size);
-			res.libs[QOI].size = enc_size;
-			free(enc_p);
+									 10, &enc_size_sc);
+			res.libs[QOI_SC].size = enc_size_sc;
+			free(enc_p_sc);
+		});
+
+		BENCHMARK_FN(opt_nowarmup, opt_runs, res.libs[QOI_REF].encode_time, {
+			int enc_size_ref;
+			void* enc_p_ref = qoi_reference_encode(pixels,
+									 &(qoi_desc){.width = w,
+												 .height = h,
+												 .channels = channels,
+												 .colorspace = QOI_SRGB},
+									  &enc_size_ref);
+			res.libs[QOI_REF].size = enc_size_ref;
+			free(enc_p_ref);
 		});
 	}
 
 	free(pixels);
 	free(encoded_png);
-	free(encoded_qoi);
+	free(encoded_qoi_sc);
+	free(encoded_qoi_ref);
 
 	return res;
 }

@@ -5,7 +5,7 @@ CC      := gcc
 CFLAGS  := -std=gnu99 -O3 -Wall -Wextra $(shell pkg-config --cflags libpng)
 LDFLAGS := $(shell pkg-config --libs libpng) -lm
 TARGET  := bench
-SRC     := bench.c
+SRC     := bench.c qoi_sc_wrapper.c qoi_ref_wrapper.c 
 
 # Optional headers (stb_image, stb_image_write, qoi)
 # must be in the same directory or include path
@@ -19,7 +19,8 @@ $(TARGET): $(SRC)
 	$(CC) $(CFLAGS) $(INCLUDES) $(SRC) $(LDFLAGS) -o $(TARGET)
 
 run: $(TARGET)
-	./$(TARGET) 10 ./images
+	./$(TARGET) 10 ../images
+	
 
 clean:
 	rm -f $(TARGET)
