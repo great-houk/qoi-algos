@@ -14,89 +14,139 @@
 #include "single-cpu/qoi-sc.hpp"
 
 struct Implementation {
-    std::string name;
-    IEncoder* encoder;
-    IDecoder* decoder;
+	std::string name;
+	IEncoder* encoder;
+	IDecoder* decoder;
 };
 
-int main() {
-    std::vector<Implementation> implementations = {
-        {"Reference", new ReferenceQOI(), new ReferenceQOI()},
-        {"Single CPU", new SingleCPUQOI(), new SingleCPUQOI()}
-    };
+struct ImageData {
+	std::string path;
+	std::vector<uint8_t> data;
+	int width, height, channels;
+};
 
-    std::vector<std::string> image_paths;
-    DIR *dir;
-    struct dirent *ent;
-    if ((dir = opendir("/home/tyler/qoi-algos/images")) != NULL) {
-        while ((ent = readdir(dir)) != NULL) {
-            std::string filename = ent->d_name;
-            if (filename.size() > 4 && filename.substr(filename.size() - 4) == ".png") {
-                image_paths.push_back("/home/tyler/qoi-algos/images/" + filename);
-            }
-        }
-        closedir(dir);
-    } else {
-        std::cerr << "Error opening directory" << std::endl;
-        return 1;
-    }
-    std::sort(image_paths.begin(), image_paths.end());
+int main(int argc, char** argv) {
+	if (argc < 3) {
+		std::cerr << "Usage: " << argv[0] << " <num_runs> <images_directory>"
+				  << std::endl;
+		return 1;
+	}
 
-    std::cout << std::left << std::setw(20) << "Implementation"
-              << std::setw(30) << "Image"
-              << std::setw(15) << "Encode Time (ms)"
-              << std::setw(15) << "Decode Time (ms)"
-              << std::setw(15) << "Encoded Size"
-              << std::setw(10) << "Verified" << std::endl;
+	int num_runs = std::stoi(argv[1]);
+	std::string images_dir = argv[2];
 
-    for (const auto& impl : implementations) {
-        for (const auto& image_path : image_paths) {
-            int width, height, channels;
-            unsigned char *img = stbi_load(image_path.c_str(), &width, &height, &channels, 0);
-            if (img == NULL) {
-                std::cerr << "Error loading image: " << image_path << std::endl;
-                continue;
-            }
-            std::vector<uint8_t> data(img, img + width * height * channels);
-            stbi_image_free(img);
+	std::vector<Implementation> implementations = {
+		{"Reference", new ReferenceQOI(), new ReferenceQOI()},
+		{"Single CPU", new SingleCPUQOI(), new SingleCPUQOI()}};
 
-            QOIEncoderSpec enc_spec = {(uint32_t)width, (uint32_t)height, (uint8_t)channels, 0};
-            std::vector<uint8_t> encoded_data;
-            double encode_time = -1;
-            if (impl.encoder) {
-                auto start = std::chrono::high_resolution_clock::now();
-                encoded_data = impl.encoder->encode(data, enc_spec);
-                auto end = std::chrono::high_resolution_clock::now();
-                encode_time = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0;
-            }
+	std::vector<ImageData> images;
+	DIR* dir;
+	struct dirent* ent;
+	if ((dir = opendir(images_dir.c_str())) != NULL) {
+		while ((ent = readdir(dir)) != NULL) {
+			std::string filename = ent->d_name;
+			if (filename.size() > 4 &&
+				filename.substr(filename.size() - 4) == ".png") {
+				ImageData img_data;
+				img_data.path = images_dir + "/" + filename;
+				unsigned char* img =
+					stbi_load(img_data.path.c_str(), &img_data.width,
+							  &img_data.height, &img_data.channels, 0);
+				if (img == NULL) {
+					std::cerr << "Error loading image: " << img_data.path
+							  << std::endl;
+					continue;
+				}
+				img_data.data.assign(
+					img,
+					img + img_data.width * img_data.height * img_data.channels);
+				stbi_image_free(img);
+				images.push_back(img_data);
+			}
+		}
+		closedir(dir);
+	} else {
+		std::cerr << "Error opening directory: " << images_dir << std::endl;
+		return 1;
+	}
+	std::sort(
+		images.begin(), images.end(),
+		[](const ImageData& a, const ImageData& b) { return a.path < b.path; });
 
-            QOIDecoderSpec dec_spec;
-            std::vector<uint8_t> decoded_data;
-            double decode_time = -1;
-            bool verified = false;
-            if (impl.decoder && !encoded_data.empty()) {
-                auto start = std::chrono::high_resolution_clock::now();
-                decoded_data = impl.decoder->decode(encoded_data, dec_spec);
-                auto end = std::chrono::high_resolution_clock::now();
-                decode_time = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0;
-                verified = (data == decoded_data);
-            }
+	std::cout << std::left << std::setw(20) << "Implementation" << std::setw(30)
+			  << "Image" << std::setw(15) << "Encode Time (ms)" << std::setw(15)
+			  << "Decode Time (ms)" << std::setw(15) << "Encoded Size"
+			  << std::setw(10) << "Verified" << std::endl;
 
-            std::cout << std::left << std::setw(20) << impl.name
-                      << std::setw(30) << image_path.substr(image_path.find_last_of("/") + 1)
-                      << std::setw(15) << (encode_time >= 0 ? std::to_string(encode_time) : "N/A")
-                      << std::setw(15) << (decode_time >= 0 ? std::to_string(decode_time) : "N/A")
-                      << std::setw(15) << (encoded_data.empty() ? "N/A" : std::to_string(encoded_data.size()))
-                      << std::setw(10) << (verified ? "Yes" : "No") << std::endl;
-        }
-    }
+	for (const auto& impl : implementations) {
+		for (const auto& image : images) {
+			double total_encode_time = 0;
+			double total_decode_time = 0;
+			std::vector<uint8_t> encoded_data;
+			bool verified = true;
 
-    for (auto& impl : implementations) {
-        delete impl.encoder;
-        impl.encoder = nullptr;
-        delete impl.decoder;
-        impl.decoder = nullptr;
-    }
+			for (int run = 0; run < num_runs; ++run) {
+				QOIEncoderSpec enc_spec = {(uint32_t)image.width,
+										   (uint32_t)image.height,
+										   (uint8_t)image.channels, 0};
+				double encode_time = -1;
+				if (impl.encoder) {
+					auto start = std::chrono::high_resolution_clock::now();
+					encoded_data = impl.encoder->encode(image.data, enc_spec);
+					auto end = std::chrono::high_resolution_clock::now();
+					encode_time =
+						std::chrono::duration_cast<std::chrono::microseconds>(
+							end - start)
+							.count() /
+						1000.0;
+					total_encode_time += encode_time;
+				}
 
-    return 0;
+				QOIDecoderSpec dec_spec;
+				std::vector<uint8_t> decoded_data;
+				double decode_time = -1;
+				if (impl.decoder && !encoded_data.empty()) {
+					auto start = std::chrono::high_resolution_clock::now();
+					decoded_data = impl.decoder->decode(encoded_data, dec_spec);
+					auto end = std::chrono::high_resolution_clock::now();
+					decode_time =
+						std::chrono::duration_cast<std::chrono::microseconds>(
+							end - start)
+							.count() /
+						1000.0;
+					total_decode_time += decode_time;
+					if (image.data != decoded_data) {
+						verified = false;
+					}
+				}
+			}
+
+			std::cout << std::left << std::setw(20) << impl.name
+					  << std::setw(30)
+					  << image.path.substr(image.path.find_last_of("/") + 1)
+					  << std::setw(15)
+					  << (total_encode_time >= 0
+							  ? std::to_string(total_encode_time / num_runs)
+							  : "N/A")
+					  << std::setw(15)
+					  << (total_decode_time >= 0
+							  ? std::to_string(total_decode_time / num_runs)
+							  : "N/A")
+					  << std::setw(15)
+					  << (encoded_data.empty()
+							  ? "N/A"
+							  : std::to_string(encoded_data.size()))
+					  << std::setw(10) << (verified ? "Yes" : "No")
+					  << std::endl;
+		}
+	}
+
+	for (auto& impl : implementations) {
+		delete impl.encoder;
+		impl.encoder = nullptr;
+		delete impl.decoder;
+		impl.decoder = nullptr;
+	}
+
+	return 0;
 }
