@@ -5,12 +5,13 @@
 #include <iomanip>
 #include <dirent.h>
 #include <algorithm>
+#include <filesystem>
 
-#define STB_IMAGE_IMPLEMENTATION
-#include "stb_image.h"
-
+#include "stb/stb_image.h"
 #include "qoi.hpp"
-#include "qoi-reference.hpp"
+#include "reference/qoi-reference.hpp"
+#include "reference/libpng.hpp"
+#include "reference/stb_image.hpp"
 #include "single-cpu/qoi-sc.hpp"
 
 struct Implementation {
@@ -22,7 +23,7 @@ struct Implementation {
 struct ImageData {
 	std::string path;
 	std::vector<uint8_t> data;
-	int width, height, channels;
+	int width, height, channels, size;
 };
 
 int main(int argc, char** argv) {
@@ -37,7 +38,9 @@ int main(int argc, char** argv) {
 
 	std::vector<Implementation> implementations = {
 		{"Reference", new ReferenceQOI(), new ReferenceQOI()},
-		{"Single CPU", new SingleCPUQOI(), new SingleCPUQOI()}};
+		{"Single CPU", new SingleCPUQOI(), new SingleCPUQOI()},
+		{"Libpng", new Libpng(), new Libpng()},
+		{"StbImage", new StbImage(), new StbImage()}};
 
 	std::vector<ImageData> images;
 	DIR* dir;
@@ -49,14 +52,18 @@ int main(int argc, char** argv) {
 				filename.substr(filename.size() - 4) == ".png") {
 				ImageData img_data;
 				img_data.path = images_dir + "/" + filename;
+				img_data.size = std::filesystem::file_size(img_data.path);
+
+				// Request 4 channels (RGBA) explicitly for consistent loading
 				unsigned char* img =
 					stbi_load(img_data.path.c_str(), &img_data.width,
-							  &img_data.height, &img_data.channels, 0);
+							  &img_data.height, &img_data.channels, 4);
 				if (img == NULL) {
 					std::cerr << "Error loading image: " << img_data.path
 							  << std::endl;
 					continue;
 				}
+				img_data.channels = 4;	// Force to 4 channels as requested
 				img_data.data.assign(
 					img,
 					img + img_data.width * img_data.height * img_data.channels);
@@ -73,10 +80,10 @@ int main(int argc, char** argv) {
 		images.begin(), images.end(),
 		[](const ImageData& a, const ImageData& b) { return a.path < b.path; });
 
-	std::cout << std::left << std::setw(20) << "Implementation" << std::setw(30)
-			  << "Image" << std::setw(15) << "Encode Time (ms)" << std::setw(15)
-			  << "Decode Time (ms)" << std::setw(15) << "Encoded Size"
-			  << std::setw(10) << "Verified" << std::endl;
+	std::cout << std::left << std::setw(20) << "Implementation" << std::setw(40)
+			  << "Image" << std::setw(20) << "Encode Time (ms)" << std::setw(20)
+			  << "Decode Time (ms)" << std::setw(20) << "Encoding Ratio"
+			  << std::setw(15) << "Verified" << std::endl;
 
 	for (const auto& impl : implementations) {
 		for (const auto& image : images) {
@@ -121,24 +128,33 @@ int main(int argc, char** argv) {
 				}
 			}
 
+			double size_ratio = encoded_data.empty()
+									? 0.0
+									: static_cast<double>(encoded_data.size()) /
+										  static_cast<double>(image.size);
 			std::cout << std::left << std::setw(20) << impl.name
-					  << std::setw(30)
+					  << std::setw(40)
 					  << image.path.substr(image.path.find_last_of("/") + 1)
-					  << std::setw(15)
+					  << std::setw(20)
 					  << (total_encode_time >= 0
 							  ? std::to_string(total_encode_time / num_runs)
 							  : "N/A")
-					  << std::setw(15)
+					  << std::setw(20)
 					  << (total_decode_time >= 0
 							  ? std::to_string(total_decode_time / num_runs)
 							  : "N/A")
-					  << std::setw(15)
-					  << (encoded_data.empty()
-							  ? "N/A"
-							  : std::to_string(encoded_data.size()))
-					  << std::setw(10) << (verified ? "Yes" : "No")
+					  << std::setw(20)
+					  << (size_ratio > 0.0 ? "+" : "-") +
+							 (encoded_data.empty()
+								  ? "N/A"
+								  : std::to_string((size_ratio - 1.0) *
+												   100.0)) +
+							 "%"
+					  << std::setw(15) << (verified ? "Yes" : "No")
 					  << std::endl;
 		}
+
+		std::cout << std::endl;
 	}
 
 	for (auto& impl : implementations) {
