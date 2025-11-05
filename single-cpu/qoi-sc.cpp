@@ -1,6 +1,7 @@
 #include "qoi-sc.hpp"
 #include <cstdlib>
 #include <cstring>
+#include <iostream>
 
 #define QOI_OP_INDEX 0x00
 #define QOI_OP_DIFF 0x40
@@ -209,13 +210,10 @@ std::vector<uint8_t> SingleCPUQOI::encode(const std::vector<uint8_t>& data,
 std::vector<uint8_t> SingleCPUQOI::decode(
 	const std::vector<uint8_t>& encoded_data,
 	QOIDecoderSpec& spec) {
+	// Read in header
 	const unsigned char* bytes = encoded_data.data();
+	int p = 0;
 	unsigned int header_magic;
-	std::vector<uint8_t> pixels;
-	qoi_rgba_t index[64];
-	qoi_rgba_t px;
-	int px_len, chunks_len, px_pos;
-	int p = 0, run = 0;
 
 	if (encoded_data.size() < QOI_HEADER_SIZE + sizeof(qoi_padding)) {
 		return {};
@@ -234,56 +232,127 @@ std::vector<uint8_t> SingleCPUQOI::decode(
 	}
 
 	int channels = spec.channels;
-	px_len = spec.width * spec.height * channels;
+	int px_len = spec.width * spec.height * channels;
+
+	// Read in checkpoints
+	typedef union {
+		struct {
+			int32_t byte_offset;
+			int32_t px_pos;
+			int32_t next_px_pos;
+		} fields;
+		// Only 8, since next_px_pos is not stored in file
+		char v[8];
+	} checkpoint_span_t;
+	std::vector<checkpoint_span_t> checkpoints;
+	int max_size = spec.width * spec.height * (spec.channels + 1) +
+				   QOI_HEADER_SIZE + sizeof(qoi_padding);
+	int max_num_checkpoints = (max_size / CHECKPOINT_INTERVAL) + 1;
+	int last_cp_px_pos = px_len;
+	// Read backwards to check for double padding
+	bool found_double_padding = false;
+	int p_size = (int)sizeof(qoi_padding);
+	int c_size = (int)sizeof(qoi_checkpoint_t);
+	int cp_p = (int)encoded_data.size() - p_size;
+	for (int i = 0; i < max_num_checkpoints; i++) {
+		bool is_padding = true;
+		for (int j = 0; j < (int)sizeof(qoi_padding); j++) {
+			if (encoded_data[cp_p - p_size + j] != qoi_padding[j]) {
+				is_padding = false;
+				break;
+			}
+		}
+		if (is_padding) {
+			found_double_padding = true;
+			// std::cout << "Found " << i << " checkpoints in QOI data."
+			// 		  << std::endl;
+			break;
+		}
+		checkpoint_span_t cp;
+		for (int j = 0; j < c_size; j++) {
+			cp.v[j] = encoded_data[cp_p - c_size + j];
+		}
+		// We're reading backwards, so this is right
+		cp.fields.next_px_pos = last_cp_px_pos;
+		last_cp_px_pos = cp.fields.px_pos;
+		checkpoints.push_back(cp);
+		cp_p -= sizeof(qoi_checkpoint_t);
+	}
+	if (!found_double_padding) {
+		// No double padding found, reset to no checkpoints
+		checkpoints.clear();
+		checkpoints.push_back((checkpoint_span_t){.fields = {p, 0, px_len}});
+		std::cout << "WARNING: No checkpoints found in QOI data, decoding from "
+					 "beginning only."
+				  << std::endl;
+	}
+
+	// Initialize stable state
+	std::vector<uint8_t> pixels;
 	pixels.resize(px_len);
+	int chunks_len = encoded_data.size() - (int)sizeof(qoi_padding);
 
-	memset(index, 0, sizeof(index));
-	px.rgba.r = 0;
-	px.rgba.g = 0;
-	px.rgba.b = 0;
-	px.rgba.a = 255;
+	for (auto cp : checkpoints) {
+		// std::cout << "Decoding from checkpoint at byte offset "
+		// 		  << cp.fields.byte_offset << ", pixel position "
+		// 		  << cp.fields.px_pos << std::endl;
 
-	chunks_len = encoded_data.size() - (int)sizeof(qoi_padding);
-	for (px_pos = 0; px_pos < px_len; px_pos += channels) {
-		if (run > 0) {
-			run--;
-		} else if (p < chunks_len) {
-			int b1 = bytes[p++];
+		// Set per checkpoint variables
+		p = cp.fields.byte_offset;
+		int px_pos = cp.fields.px_pos;
 
-			if (b1 == QOI_OP_RGB) {
-				px.rgba.r = bytes[p++];
-				px.rgba.g = bytes[p++];
-				px.rgba.b = bytes[p++];
-			} else if (b1 == QOI_OP_RGBA) {
-				px.rgba.r = bytes[p++];
-				px.rgba.g = bytes[p++];
-				px.rgba.b = bytes[p++];
-				px.rgba.a = bytes[p++];
-			} else if ((b1 & QOI_MASK_2) == QOI_OP_INDEX) {
-				px = index[b1];
-			} else if ((b1 & QOI_MASK_2) == QOI_OP_DIFF) {
-				px.rgba.r += ((b1 >> 4) & 0x03) - 2;
-				px.rgba.g += ((b1 >> 2) & 0x03) - 2;
-				px.rgba.b += (b1 & 0x03) - 2;
-			} else if ((b1 & QOI_MASK_2) == QOI_OP_LUMA) {
-				int b2 = bytes[p++];
-				int vg = (b1 & 0x3f) - 32;
-				px.rgba.r += vg - 8 + ((b2 >> 4) & 0x0f);
-				px.rgba.g += vg;
-				px.rgba.b += vg - 8 + (b2 & 0x0f);
-			} else if ((b1 & QOI_MASK_2) == QOI_OP_RUN) {
-				run = (b1 & 0x3f);
+		// Initalize per checkpoint state
+		qoi_rgba_t index[64];
+		qoi_rgba_t px;
+		int run = 0;
+
+		memset(index, 0, sizeof(index));
+		px.rgba.r = 0;
+		px.rgba.g = 0;
+		px.rgba.b = 0;
+		px.rgba.a = 255;
+
+		for (; px_pos < cp.fields.next_px_pos; px_pos += channels) {
+			if (run > 0) {
+				run--;
+			} else if (p < chunks_len) {
+				int b1 = bytes[p++];
+
+				if (b1 == QOI_OP_RGB) {
+					px.rgba.r = bytes[p++];
+					px.rgba.g = bytes[p++];
+					px.rgba.b = bytes[p++];
+				} else if (b1 == QOI_OP_RGBA) {
+					px.rgba.r = bytes[p++];
+					px.rgba.g = bytes[p++];
+					px.rgba.b = bytes[p++];
+					px.rgba.a = bytes[p++];
+				} else if ((b1 & QOI_MASK_2) == QOI_OP_INDEX) {
+					px = index[b1];
+				} else if ((b1 & QOI_MASK_2) == QOI_OP_DIFF) {
+					px.rgba.r += ((b1 >> 4) & 0x03) - 2;
+					px.rgba.g += ((b1 >> 2) & 0x03) - 2;
+					px.rgba.b += (b1 & 0x03) - 2;
+				} else if ((b1 & QOI_MASK_2) == QOI_OP_LUMA) {
+					int b2 = bytes[p++];
+					int vg = (b1 & 0x3f) - 32;
+					px.rgba.r += vg - 8 + ((b2 >> 4) & 0x0f);
+					px.rgba.g += vg;
+					px.rgba.b += vg - 8 + (b2 & 0x0f);
+				} else if ((b1 & QOI_MASK_2) == QOI_OP_RUN) {
+					run = (b1 & 0x3f);
+				}
+
+				index[QOI_COLOR_HASH(px) & (64 - 1)] = px;
 			}
 
-			index[QOI_COLOR_HASH(px) & (64 - 1)] = px;
-		}
+			pixels[px_pos + 0] = px.rgba.r;
+			pixels[px_pos + 1] = px.rgba.g;
+			pixels[px_pos + 2] = px.rgba.b;
 
-		pixels[px_pos + 0] = px.rgba.r;
-		pixels[px_pos + 1] = px.rgba.g;
-		pixels[px_pos + 2] = px.rgba.b;
-
-		if (channels == 4) {
-			pixels[px_pos + 3] = px.rgba.a;
+			if (channels == 4) {
+				pixels[px_pos + 3] = px.rgba.a;
+			}
 		}
 	}
 
