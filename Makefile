@@ -1,25 +1,27 @@
 # Makefile for bench
 
 CXX      := g++
-CXXFLAGS := -std=c++11 -g -O3 -Wall -Wextra -I. -I/usr/include/stb
-LDFLAGS  := -lstdc++ -lm
+CXXFLAGS := -std=c++17 -g -O3 -Wall -Wextra -I.
+LDFLAGS  := -lstdc++ -lm -lpng
 TARGET   := bench
 
-SRCS := bench.cpp qoi-reference.cpp single-cpu/qoi-sc.cpp
-OBJS := $(SRCS:.cpp=.o)
+SRCS := bench.cpp reference/qoi-reference.cpp reference/libpng.cpp reference/stb_image.cpp single-cpu/qoi-sc.cpp
+OBJS := $(patsubst %.cpp, bin/%.o, $(SRCS))
 
 .PHONY: all clean run
 
-all: $(TARGET)
+all: bin/$(TARGET)
 
-$(TARGET): $(OBJS)
-	$(CXX) $(CXXFLAGS) $(OBJS) -o $(TARGET) $(LDFLAGS)
+bin/$(TARGET): $(OBJS)
+	@mkdir -p bin
+	$(CXX) $(CXXFLAGS) $(OBJS) -o bin/$(TARGET) $(LDFLAGS)
 
-%.o: %.cpp
+bin/%.o: %.cpp
+	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 run:
-	./$(TARGET) 10 images
+	./bin/$(TARGET) 10 images
 
 clean:
-	rm -f $(TARGET) $(OBJS)
+	rm -rf bin

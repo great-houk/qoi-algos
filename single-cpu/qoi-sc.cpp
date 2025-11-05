@@ -17,6 +17,8 @@
 	 (((unsigned int)'i') << 8) | (((unsigned int)'f')))
 #define QOI_HEADER_SIZE 14
 #define QOI_PIXELS_MAX ((unsigned int)400000000)
+#define CHECKPOINT_INTERVAL (1 << 19)  // 0.5 MiB
+#define INVALID_PIXEL 0xFF'FF'FF'00	   // 0 alpha pure white
 
 typedef union {
 	struct {
@@ -24,6 +26,14 @@ typedef union {
 	} rgba;
 	unsigned int v;
 } qoi_rgba_t;
+
+typedef union {
+	struct {
+		int32_t byte_offset;
+		int32_t px_pos;
+	} fields;
+	char v[8];
+} qoi_checkpoint_t;
 
 static const unsigned char qoi_padding[8] = {0, 0, 0, 0, 0, 0, 0, 1};
 
@@ -47,6 +57,7 @@ std::vector<uint8_t> SingleCPUQOI::encode(const std::vector<uint8_t>& data,
 	int p = 0, run = 0;
 	int px_len, px_end, px_pos, channels;
 	std::vector<uint8_t> bytes;
+	std::vector<qoi_checkpoint_t> checkpoints;
 	const unsigned char* pixels = data.data();
 	qoi_rgba_t index[64];
 	qoi_rgba_t px, px_prev;
@@ -59,7 +70,10 @@ std::vector<uint8_t> SingleCPUQOI::encode(const std::vector<uint8_t>& data,
 
 	int max_size = spec.width * spec.height * (spec.channels + 1) +
 				   QOI_HEADER_SIZE + sizeof(qoi_padding);
-	bytes.resize(max_size);
+	int checkpoint_size =
+		(max_size / CHECKPOINT_INTERVAL) * sizeof(qoi_checkpoint_t) +
+		sizeof(qoi_padding);
+	bytes.resize(max_size + checkpoint_size);
 
 	qoi_write_32(bytes.data(), &p, QOI_MAGIC);
 	qoi_write_32(bytes.data(), &p, spec.width);
@@ -67,7 +81,7 @@ std::vector<uint8_t> SingleCPUQOI::encode(const std::vector<uint8_t>& data,
 	bytes[p++] = spec.channels;
 	bytes[p++] = spec.colorspace;
 
-	memset(index, 0, sizeof(index));
+	memset(index, INVALID_PIXEL, sizeof(index));
 
 	run = 0;
 	px_prev.rgba.r = 0;
@@ -79,6 +93,9 @@ std::vector<uint8_t> SingleCPUQOI::encode(const std::vector<uint8_t>& data,
 	px_len = spec.width * spec.height * spec.channels;
 	px_end = px_len - spec.channels;
 	channels = spec.channels;
+
+	// Push first pixel to checkpoints
+	checkpoints.push_back((qoi_checkpoint_t){.fields = {p, 0}});
 
 	for (px_pos = 0; px_pos < px_len; px_pos += channels) {
 		px.rgba.r = pixels[px_pos + 0];
@@ -103,47 +120,84 @@ std::vector<uint8_t> SingleCPUQOI::encode(const std::vector<uint8_t>& data,
 				run = 0;
 			}
 
+			// Checkpoints are added so we can decode from other positions in
+			// the middle of the image. This means we need to clear all state.
+			if (p - checkpoints.back().fields.byte_offset >=
+				CHECKPOINT_INTERVAL) {
+				qoi_checkpoint_t cp = {.fields = {p, px_pos}};
+				checkpoints.push_back(cp);
+				memset(index, 0, sizeof(index));
+				px_prev.v = INVALID_PIXEL;
+			}
+
 			index_pos = QOI_COLOR_HASH(px) & (64 - 1);
 
-			if (index[index_pos].v == px.v) {
+			if (index[index_pos].v != INVALID_PIXEL &&
+				index[index_pos].v == px.v) {
 				bytes[p++] = QOI_OP_INDEX | index_pos;
 			} else {
 				index[index_pos] = px;
 
-				if (px.rgba.a == px_prev.rgba.a) {
-					signed char vr = px.rgba.r - px_prev.rgba.r;
-					signed char vg = px.rgba.g - px_prev.rgba.g;
-					signed char vb = px.rgba.b - px_prev.rgba.b;
-
-					signed char vg_r = vr - vg;
-					signed char vg_b = vb - vg;
-
-					if (vr > -3 && vr < 2 && vg > -3 && vg < 2 && vb > -3 &&
-						vb < 2) {
-						bytes[p++] = QOI_OP_DIFF | (vr + 2) << 4 |
-									 (vg + 2) << 2 | (vb + 2);
-					} else if (vg_r > -9 && vg_r < 8 && vg > -33 && vg < 32 &&
-							   vg_b > -9 && vg_b < 8) {
-						bytes[p++] = QOI_OP_LUMA | (vg + 32);
-						bytes[p++] = (vg_r + 8) << 4 | (vg_b + 8);
+				if (px_prev.v == INVALID_PIXEL) {
+					if (channels == 4) {
+						bytes[p++] = QOI_OP_RGBA;
 					} else {
 						bytes[p++] = QOI_OP_RGB;
-						bytes[p++] = px.rgba.r;
-						bytes[p++] = px.rgba.g;
-						bytes[p++] = px.rgba.b;
 					}
-				} else {
-					bytes[p++] = QOI_OP_RGBA;
 					bytes[p++] = px.rgba.r;
 					bytes[p++] = px.rgba.g;
 					bytes[p++] = px.rgba.b;
-					bytes[p++] = px.rgba.a;
+					if (channels == 4) {
+						bytes[p++] = px.rgba.a;
+					}
+				} else {
+					if (px.rgba.a == px_prev.rgba.a) {
+						signed char vr = px.rgba.r - px_prev.rgba.r;
+						signed char vg = px.rgba.g - px_prev.rgba.g;
+						signed char vb = px.rgba.b - px_prev.rgba.b;
+
+						signed char vg_r = vr - vg;
+						signed char vg_b = vb - vg;
+
+						if (vr > -3 && vr < 2 && vg > -3 && vg < 2 && vb > -3 &&
+							vb < 2) {
+							bytes[p++] = QOI_OP_DIFF | (vr + 2) << 4 |
+										 (vg + 2) << 2 | (vb + 2);
+						} else if (vg_r > -9 && vg_r < 8 && vg > -33 &&
+								   vg < 32 && vg_b > -9 && vg_b < 8) {
+							bytes[p++] = QOI_OP_LUMA | (vg + 32);
+							bytes[p++] = (vg_r + 8) << 4 | (vg_b + 8);
+						} else {
+							bytes[p++] = QOI_OP_RGB;
+							bytes[p++] = px.rgba.r;
+							bytes[p++] = px.rgba.g;
+							bytes[p++] = px.rgba.b;
+						}
+					} else {
+						bytes[p++] = QOI_OP_RGBA;
+						bytes[p++] = px.rgba.r;
+						bytes[p++] = px.rgba.g;
+						bytes[p++] = px.rgba.b;
+						bytes[p++] = px.rgba.a;
+					}
 				}
 			}
 		}
 		px_prev = px;
 	}
 
+	for (int i = 0; i < (int)sizeof(qoi_padding); i++) {
+		bytes[p++] = qoi_padding[i];
+	}
+
+	// Add checkpoint locations
+	for (auto c : checkpoints) {
+		for (auto b : c.v) {
+			bytes[p++] = b;
+		}
+	}
+
+	// Add in second qoi ending padding
 	for (int i = 0; i < (int)sizeof(qoi_padding); i++) {
 		bytes[p++] = qoi_padding[i];
 	}
