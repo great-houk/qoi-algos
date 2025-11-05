@@ -8,7 +8,7 @@ TARGET   := bench
 SRCS := bench.cpp qoi-reference.cpp single-cpu/qoi-sc.cpp
 OBJS := $(SRCS:.cpp=.o)
 
-.PHONY: all clean
+.PHONY: all clean run
 
 all: $(TARGET)
 
@@ -17,6 +17,9 @@ $(TARGET): $(OBJS)
 
 %.o: %.cpp
 	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+run:
+	./$(TARGET) 10 images
 
 clean:
 	rm -f $(TARGET) $(OBJS)
