@@ -39,8 +39,10 @@ int main(int argc, char** argv) {
 	std::vector<Implementation> implementations = {
 		{"Reference", new ReferenceQOI(), new ReferenceQOI()},
 		{"Single CPU", new SingleCPUQOI(), new SingleCPUQOI()},
-		{"Libpng", new Libpng(), new Libpng()},
-		{"StbImage", new StbImage(), new StbImage()}};
+		// {"Libpng", new Libpng(), new Libpng()},
+		// {"StbImage", new StbImage(), new StbImage()},
+		// Comment to force formatting
+	};
 
 	std::vector<ImageData> images;
 	DIR* dir;
