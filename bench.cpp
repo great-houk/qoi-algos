@@ -13,6 +13,7 @@
 #include "reference/libpng.hpp"
 #include "reference/stb_image.hpp"
 #include "single-cpu/qoi-sc.hpp"
+#include "multi-cpu/qoi-mc.hpp"
 
 struct Implementation {
 	std::string name;
@@ -38,9 +39,10 @@ int main(int argc, char** argv) {
 
 	std::vector<Implementation> implementations = {
 		{"Reference", new ReferenceQOI(), new ReferenceQOI()},
-		{"Single CPU", new SingleCPUQOI(), new SingleCPUQOI()},
+		{"Single Threaded", new SingleCPUQOI(), new SingleCPUQOI()},
+		{"Multi Threaded", new MultiCPUQOI(), new MultiCPUQOI()},
 		// {"Libpng", new Libpng(), new Libpng()},
-		// {"StbImage", new StbImage(), new StbImage()},
+		{"StbImage", new StbImage(), new StbImage()},
 		// Comment to force formatting
 	};
 

@@ -1,11 +1,11 @@
 # Makefile for bench
 
 CXX      := g++
-CXXFLAGS := -std=c++17 -g -O3 -Wall -Wextra -I.
+CXXFLAGS := -std=c++17 -g -O3 -Wall -Wextra -I. -fopenmp
 LDFLAGS  := -lstdc++ -lm -lpng
 TARGET   := bench
 
-SRCS := bench.cpp reference/qoi-reference.cpp reference/libpng.cpp reference/stb_image.cpp single-cpu/qoi-sc.cpp
+SRCS := bench.cpp reference/qoi-reference.cpp reference/libpng.cpp reference/stb_image.cpp single-cpu/qoi-sc.cpp multi-cpu/qoi-mc.cpp
 OBJS := $(patsubst %.cpp, bin/%.o, $(SRCS))
 
 .PHONY: all clean run
