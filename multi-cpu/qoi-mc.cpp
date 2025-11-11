@@ -122,7 +122,7 @@ std::vector<uint8_t> MultiCPUQOI::encode(const std::vector<uint8_t>& data,
     std::vector<std::vector<qoi_checkpoint_t>> checkpoints_parts(num_segments);
 
 #ifdef _OPENMP
-    #pragma omp parallel for schedule(static) num_threads(num_segments)
+    #pragma omp parallel for schedule(dynamic) num_threads(num_segments)
 #endif
 
 
