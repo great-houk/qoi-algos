@@ -1,7 +1,12 @@
 #include "qoi-mc.hpp"
+#include <algorithm>
+#include <cstddef>
 #include <cstdlib>
+#include <vector>
+#include <type_traits>
 #include <cstring>
 #include <iostream>
+#include <omp.h>
 
 #define QOI_OP_INDEX 0x00
 #define QOI_OP_DIFF 0x40
@@ -53,105 +58,186 @@ static unsigned int qoi_read_32(const unsigned char* bytes, int* p) {
 	return a << 24 | b << 16 | c << 8 | d;
 }
 
+
 std::vector<uint8_t> MultiCPUQOI::encode(const std::vector<uint8_t>& data,
 										 QOIEncoderSpec& spec) {
-	int p = 0, run = 0;
-	int px_len, px_end, px_pos, channels;
-	std::vector<uint8_t> bytes;
-	std::vector<qoi_checkpoint_t> checkpoints;
-	const unsigned char* pixels = data.data();
-	qoi_rgba_t index[64];
-	qoi_rgba_t px, px_prev;
+	// int p = 0, run = 0;
+	// int start_px;
+	// int px_len, px_end, px_pos, channels;
+	// std::vector<uint8_t> bytes;
+	// std::vector<qoi_checkpoint_t> checkpoints;
+	// const unsigned char* pixels = data.data();
+	// qoi_rgba_t index[64];
+	// qoi_rgba_t px, px_prev;
 
 	if (spec.width == 0 || spec.height == 0 || spec.channels < 3 ||
 		spec.channels > 4 || spec.colorspace > 1 ||
 		spec.height >= QOI_PIXELS_MAX / spec.width) {
 		return {};
 	}
+	//header 
 
-	int max_size = spec.width * spec.height * (spec.channels + 1) +
-				   QOI_HEADER_SIZE + sizeof(qoi_padding);
-	int checkpoint_size =
-		(max_size / CHECKPOINT_INTERVAL) * sizeof(qoi_checkpoint_t) +
-		sizeof(qoi_padding);
-	bytes.resize(max_size + checkpoint_size);
+	// int max_size = spec.width * spec.height * (spec.channels + 1) +
+	// 			   QOI_HEADER_SIZE + sizeof(qoi_padding);
+	// int checkpoint_size =
+	// 	(max_size / CHECKPOINT_INTERVAL) * sizeof(qoi_checkpoint_t) +
+	// 	sizeof(qoi_padding);
+	// bytes.resize(max_size + checkpoint_size);
+	const unsigned char*  pixels = data.data();
+    int channels = spec.channels;
+	//size of image in pixels
+    int total_px = spec.width * spec.height;
 
+	std::vector<uint8_t> bytes;
+	bytes.resize(QOI_HEADER_SIZE);
+	int p = 0;
 	qoi_write_32(bytes.data(), &p, QOI_MAGIC);
 	qoi_write_32(bytes.data(), &p, spec.width);
 	qoi_write_32(bytes.data(), &p, spec.height);
+	//storing channels and colorspace in header
 	bytes[p++] = spec.channels;
 	bytes[p++] = spec.colorspace;
 
-	memset(index, INVALID_PIXEL, sizeof(index));
+	// memset(index, INVALID_PIXEL, sizeof(index));
 
-	run = 0;
-	px_prev.rgba.r = 0;
-	px_prev.rgba.g = 0;
-	px_prev.rgba.b = 0;
-	px_prev.rgba.a = 255;
-	px = px_prev;
+	
 
-	px_len = spec.width * spec.height * spec.channels;
-	px_end = px_len - spec.channels;
-	channels = spec.channels;
+	// px_len = spec.width * spec.height * spec.channels;
+	// px_end = px_len - spec.channels;
+	// channels = spec.channels;
 
-	// Push first pixel to checkpoints
-	checkpoints.push_back((qoi_checkpoint_t){.fields = {p, 0}});
+	// // Push first pixel to checkpoints
+	// checkpoints.push_back((qoi_checkpoint_t){.fields = {p, start_px}});
 
-	for (px_pos = 0; px_pos < px_len; px_pos += channels) {
+	int max_threads = 1;
+	#ifdef _OPENMP
+    	max_threads = omp_get_max_threads();
+	#endif
+		// split image into segments for each thread
+	const int chunk_px = 524288; // half a million pixels
+	const int num_segments = std::max(1,std::min(max_threads, std::max(1, total_px / chunk_px))); // half a million pixels
+	const int seg_px = (total_px + num_segments - 1) / num_segments;
+
+	std::vector<std::vector<uint8_t>> bytes_parts(num_segments);
+    std::vector<std::vector<qoi_checkpoint_t>> checkpoints_parts(num_segments);
+
+#ifdef _OPENMP
+    #pragma omp parallel for schedule(static) num_threads(num_segments)
+#endif
+
+
+	for(int s = 0; s<num_segments;s++){
+		//segment start pixel we do s*seg_px because s is segment index
+		const int start_px = s * seg_px;
+		//segment end pixel we use min to avoid overflow on last segment
+		const int end_px = std::min(total_px, start_px + seg_px);
+		if(start_px >= end_px) continue;
+
+		std::vector<uint8_t>& bytes = bytes_parts[s];
+		std::vector<qoi_checkpoint_t>& checkpoints = checkpoints_parts[s];
+
+		//Local state in each thread
+		int p = 0, run = 0;
+		//px_len is number of pixels in this segment * channels
+		//px_end is last pixel position in this segment
+		//px_pos is current pixel position in this segment
+		int px_len, px_end, px_pos, channels_local = channels; 
+		qoi_rgba_t index[64]; //pixel color index table
+		qoi_rgba_t px, px_prev;// current and previous pixel
+		//seperate state dependent on segment
+		memset(index, INVALID_PIXEL, sizeof(index));
+		run = 0;
+		px_prev.rgba.r = 0;
+		px_prev.rgba.g = 0;
+		px_prev.rgba.b = 0;
+		px_prev.rgba.a = 255;
+		px = px_prev;
+
+		const int segment_start = start_px * channels_local;
+		const int segment_end = end_px * channels_local;
+		px_len = segment_end;
+		px_end = segment_end - channels_local;
+
+		bytes.reserve((end_px - start_px)*(channels_local +1));
+
+        checkpoints.push_back((qoi_checkpoint_t){ .fields = { p, segment_start } });
+
+
+
+	for (px_pos = segment_start; px_pos < segment_end; px_pos += channels_local) {
+		//loads current pixel RGB
 		px.rgba.r = pixels[px_pos + 0];
 		px.rgba.g = pixels[px_pos + 1];
 		px.rgba.b = pixels[px_pos + 2];
 
+		//loads alpha of current pixel if exists
 		if (channels == 4) {
 			px.rgba.a = pixels[px_pos + 3];
 		}
 
+		//If current pixel is same as previous pixel
 		if (px.v == px_prev.v) {
+			// increase run length
 			run++;
+			///reach max encoded length push onto byte array and reset counter 
 			if (run == 62 || px_pos == px_end) {
-				bytes[p++] = QOI_OP_RUN | (run - 1);
+				bytes.push_back(QOI_OP_RUN | (run - 1));
+				p++;
 				run = 0;
 			}
 		} else {
 			int index_pos;
 
+			// if pixel color changed we push to byte and flush run 
 			if (run > 0) {
-				bytes[p++] = QOI_OP_RUN | (run - 1);
+				bytes.push_back( QOI_OP_RUN | (run - 1));
+				p++;
 				run = 0;
 			}
 
 			// Checkpoints are added so we can decode from other positions in
 			// the middle of the image. This means we need to clear all state.
+			// record a new checkpoint and reset encoder state (index + px_prev).
 			if (p - checkpoints.back().fields.byte_offset >=
 				CHECKPOINT_INTERVAL) {
 				qoi_checkpoint_t cp = {.fields = {p, px_pos}};
 				checkpoints.push_back(cp);
-				memset(index, 0, sizeof(index));
-				px_prev.v = INVALID_PIXEL;
+				memset(index, 0, sizeof(index)); //clear color index table
+				px_prev.v = INVALID_PIXEL;  // force absolute write next time
 			}
 
-			index_pos = QOI_COLOR_HASH(px) & (64 - 1);
+		// Hash current pixel to a color index slot [0..63].
+		//basically maping the pixel to a position in the index table
+			index_pos = QOI_COLOR_HASH(px) & (64 - 1); 
 
+			// Fast path: if the hash slot holds the exact same pixel, emit INDEX op.
 			if (index[index_pos].v != INVALID_PIXEL &&
 				index[index_pos].v == px.v) {
-				bytes[p++] = QOI_OP_INDEX | index_pos;
+				bytes.push_back( QOI_OP_INDEX | index_pos);
+				p++;
 			} else {
+				// Otherwise, update the index slot with this pixel.
 				index[index_pos] = px;
 
+// If px_prev was invalidated (e.g., at start or after a checkpoint),
+			// we must write this pixel absolutely (RGB/RGBA).
 				if (px_prev.v == INVALID_PIXEL) {
 					if (channels == 4) {
-						bytes[p++] = QOI_OP_RGBA;
+						bytes.push_back(QOI_OP_RGBA); 
+						p++;
 					} else {
-						bytes[p++] = QOI_OP_RGB;
+						bytes.push_back(QOI_OP_RGB);
+						p++;
 					}
-					bytes[p++] = px.rgba.r;
-					bytes[p++] = px.rgba.g;
-					bytes[p++] = px.rgba.b;
+					bytes.push_back(px.rgba.r); p++;
+					bytes.push_back(px.rgba.g); p++;
+					bytes.push_back(px.rgba.b); p++;
+			
 					if (channels == 4) {
-						bytes[p++] = px.rgba.a;
+						bytes.push_back(px.rgba.a); p++;
 					}
 				} else {
+					// If alpha is unchanged, try DIFF/LUMA (smaller) before falling back to RGB.
 					if (px.rgba.a == px_prev.rgba.a) {
 						signed char vr = px.rgba.r - px_prev.rgba.r;
 						signed char vg = px.rgba.g - px_prev.rgba.g;
@@ -162,48 +248,67 @@ std::vector<uint8_t> MultiCPUQOI::encode(const std::vector<uint8_t>& data,
 
 						if (vr > -3 && vr < 2 && vg > -3 && vg < 2 && vb > -3 &&
 							vb < 2) {
-							bytes[p++] = QOI_OP_DIFF | (vr + 2) << 4 |
-										 (vg + 2) << 2 | (vb + 2);
+							bytes.push_back(QOI_OP_DIFF | (vr + 2) << 4 |
+										 (vg + 2) << 2 | (vb + 2)); p++;
 						} else if (vg_r > -9 && vg_r < 8 && vg > -33 &&
 								   vg < 32 && vg_b > -9 && vg_b < 8) {
-							bytes[p++] = QOI_OP_LUMA | (vg + 32);
-							bytes[p++] = (vg_r + 8) << 4 | (vg_b + 8);
+							bytes.push_back(QOI_OP_LUMA | (vg + 32)); 
+							p++;
+							bytes.push_back((vg_r + 8) << 4 | (vg_b + 8)); 
+							p++;
 						} else {
-							bytes[p++] = QOI_OP_RGB;
-							bytes[p++] = px.rgba.r;
-							bytes[p++] = px.rgba.g;
-							bytes[p++] = px.rgba.b;
+							bytes.push_back(QOI_OP_RGB); p++;
+							bytes.push_back(px.rgba.r); p++;
+							bytes.push_back(px.rgba.g); p++;
+							bytes.push_back(px.rgba.b); p++;
 						}
 					} else {
-						bytes[p++] = QOI_OP_RGBA;
-						bytes[p++] = px.rgba.r;
-						bytes[p++] = px.rgba.g;
-						bytes[p++] = px.rgba.b;
-						bytes[p++] = px.rgba.a;
+
+						bytes.push_back(QOI_OP_RGBA); p++;
+						bytes.push_back(px.rgba.r); p++;
+						bytes.push_back(px.rgba.g); p ++;
+						bytes.push_back(px.rgba.b); p++;
+						bytes.push_back(px.rgba.a); p++;
 					}
 				}
 			}
 		}
 		px_prev = px;
 	}
-
-	for (int i = 0; i < (int)sizeof(qoi_padding); i++) {
-		bytes[p++] = qoi_padding[i];
 	}
 
-	// Add checkpoint locations
-	for (auto c : checkpoints) {
-		for (auto b : c.v) {
-			bytes[p++] = b;
-		}
+	//
+	std::vector<size_t> segment_offsets(num_segments);
+	size_t payload_bytes = 0;
+	for (int i = 0; i < num_segments; i++) {
+		segment_offsets[i] = payload_bytes;
+		payload_bytes += bytes_parts[i].size();
+		
 	}
+ bytes.reserve(QOI_HEADER_SIZE + payload_bytes +
+                  sizeof(qoi_padding) +                   
+				  (num_segments * sizeof(qoi_checkpoint_t)) +
+                  sizeof(qoi_padding));
+
+	for(int s = 0; s<num_segments;++s){
+		bytes.insert(bytes.end(), bytes_parts[s].begin(), bytes_parts[s].end());
+	}
+
+	for (int i = 0; i < (int)sizeof(qoi_padding); ++i) bytes.push_back(qoi_padding[i]);
+
 
 	// Add in second qoi ending padding
-	for (int i = 0; i < (int)sizeof(qoi_padding); i++) {
-		bytes[p++] = qoi_padding[i];
-	}
+	  for (int s = 0; s < num_segments; ++s) {
+        for (qoi_checkpoint_t cp : checkpoints_parts[s]) {
+            cp.fields.byte_offset = QOI_HEADER_SIZE +
+                                    (int32_t)segment_offsets[s] +
+                                    cp.fields.byte_offset;
+            for (uint8_t b : cp.v) bytes.push_back(b);
+        }
+    }
 
-	bytes.resize(p);
+for (int i = 0; i < (int)sizeof(qoi_padding); ++i) bytes.push_back(qoi_padding[i]);
+
 	return bytes;
 }
 
