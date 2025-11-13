@@ -105,6 +105,13 @@ int main(int argc, char** argv) {
 			  << std::setw(15) << "Verified" << std::endl;
 
 	for (const auto& impl : implementations) {
+		// Accumulate totals across all images and runs for this implementation
+		double impl_total_encode_time_ms = 0.0;
+		double impl_total_decode_time_ms = 0.0;
+		uint64_t impl_total_raw_bytes_encoded =
+			0;	// sum of width*height*channels per run
+		uint64_t impl_total_pixels_encoded = 0;	 // sum of width*height per run
+
 		for (const auto& image : images) {
 			double total_encode_time = 0;
 			double total_decode_time = 0;
@@ -182,7 +189,48 @@ int main(int argc, char** argv) {
 							 "%"
 					  << std::setw(15) << (verified ? "Yes" : "No")
 					  << std::endl;
+
+			// update implementation-level totals
+			// raw bytes (input pixels) per image per run
+			uint64_t raw_bytes = static_cast<uint64_t>(image.width) *
+								 static_cast<uint64_t>(image.height) *
+								 static_cast<uint64_t>(image.channels);
+			uint64_t pixels = static_cast<uint64_t>(image.width) *
+							  static_cast<uint64_t>(image.height);
+			impl_total_raw_bytes_encoded +=
+				raw_bytes * static_cast<uint64_t>(num_runs);
+			impl_total_pixels_encoded +=
+				pixels * static_cast<uint64_t>(num_runs);
+			impl_total_encode_time_ms += total_encode_time;
+			impl_total_decode_time_ms += total_decode_time;
 		}
+
+		// After all images for this implementation, compute MB/s and Mp/s
+		// (averaged over all pictures/runs)
+
+		auto print_rate = [&](uint64_t total_raw_bytes, uint64_t total_pixels,
+							  double total_time_ms, const std::string& label) {
+			double total_time_s = total_time_ms / 1000.0;
+			if (total_time_s <= 0.0) {
+				std::cout << "  " << label << ": N/A (no time recorded)"
+						  << std::endl;
+				return;
+			}
+			double mb_per_s = static_cast<double>(total_raw_bytes) /
+							  total_time_s / 1e6;  // MB/s (10^6)
+			double mp_per_s = static_cast<double>(total_pixels) / total_time_s /
+							  1e6;	// Mp/s (10^6)
+			std::cout << "  " << label << ": " << std::fixed
+					  << std::setprecision(2) << mb_per_s << " MB/s, "
+					  << mp_per_s << " Mp/s" << std::endl;
+		};
+
+		std::cout << std::endl;
+		std::cout << impl.name << " summary:" << std::endl;
+		print_rate(impl_total_raw_bytes_encoded, impl_total_pixels_encoded,
+				   impl_total_encode_time_ms, "Encode avg");
+		print_rate(impl_total_raw_bytes_encoded, impl_total_pixels_encoded,
+				   impl_total_decode_time_ms, "Decode avg");
 
 		std::cout << std::endl;
 	}

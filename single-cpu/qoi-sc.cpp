@@ -54,7 +54,7 @@ std::vector<uint8_t> SingleCPUQOI::encode(const std::vector<uint8_t>& data,
 	int max_size = spec.width * spec.height * (spec.channels + 1) +
 				   sizeof(QOIHeader) + sizeof(qoi_padding);
 	int checkpoint_size =
-		(max_size / CHECKPOINT_INTERVAL) * sizeof(qoi_checkpoint_t) +
+		(max_size / MIN_CHECKPOINT_INTERVAL) * sizeof(qoi_checkpoint_t) +
 		sizeof(qoi_padding);
 	bytes.resize(max_size + checkpoint_size);
 
@@ -106,7 +106,7 @@ std::vector<uint8_t> SingleCPUQOI::encode(const std::vector<uint8_t>& data,
 			// Checkpoints are added so we can decode from other positions in
 			// the middle of the image. This means we need to clear all state.
 			if (p - checkpoints.back().fields.byte_offset >=
-				CHECKPOINT_INTERVAL) {
+				MIN_CHECKPOINT_INTERVAL) {
 				qoi_checkpoint_t cp = {.fields = {p, px_pos}};
 				checkpoints.push_back(cp);
 				memset(index, 0, sizeof(index));
@@ -229,7 +229,7 @@ std::vector<uint8_t> SingleCPUQOI::decode(
 	std::vector<checkpoint_span_t> checkpoints;
 	int max_size = spec.width * spec.height * (spec.channels + 1) +
 				   sizeof(QOIHeader) + sizeof(qoi_padding);
-	int max_num_checkpoints = (max_size / CHECKPOINT_INTERVAL) + 1;
+	int max_num_checkpoints = (max_size / MIN_CHECKPOINT_INTERVAL) + 1;
 	int last_cp_px_pos = px_len;
 	// Read backwards to check for double padding
 	bool found_double_padding = false;

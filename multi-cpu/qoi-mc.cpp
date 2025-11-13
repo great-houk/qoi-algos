@@ -147,8 +147,8 @@ std::vector<uint8_t> MultiCPUQOI::encode(const std::vector<uint8_t>& pixels,
 	int total_px = spec.width * spec.height;
 
 	int num_segments =
-		(total_px * PIXEL_TO_ENCODE_RATIO) / CHECKPOINT_INTERVAL + 1;
-	int num_segs_per_job = 4;
+		(total_px * PIXEL_TO_ENCODE_RATIO) / this->CHECKPOINT_INTERVAL + 1;
+	int checks_per_seg = this->CHECKPOINTS_PER_SEGMENT;
 
 	// ceiling division == total_px / num_segments rounded up
 	int seg_px = (total_px + num_segments - 1) / num_segments;
@@ -158,8 +158,8 @@ std::vector<uint8_t> MultiCPUQOI::encode(const std::vector<uint8_t>& pixels,
 
 // Process pixels
 #pragma omp parallel for schedule(static)
-	for (int s = 0; s < num_segments; s += num_segs_per_job) {
-		for (int j = 0; j < num_segs_per_job && s + j < num_segments; j++) {
+	for (int s = 0; s < num_segments; s += checks_per_seg) {
+		for (int j = 0; j < checks_per_seg && s + j < num_segments; j++) {
 			// Build checkpoint
 			const int start_px = (s + j) * seg_px * channels;
 			const int end_px =
@@ -265,7 +265,7 @@ std::vector<uint8_t> MultiCPUQOI::decode(
 		// Only 8, since next_px_pos is not stored in file
 		char v[8];
 	} checkpoint_span_t;
-	int max_num_checkpoints = (max_size / CHECKPOINT_INTERVAL) + 1;
+	int max_num_checkpoints = (max_size / this->CHECKPOINT_INTERVAL) + 1;
 	std::vector<checkpoint_span_t> checkpoints;
 	checkpoints.reserve(max_num_checkpoints);
 	// Read backwards to check for double padding

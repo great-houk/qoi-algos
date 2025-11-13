@@ -1,8 +1,10 @@
 .vscode
 bench
 convert
+test_params
 *.o
 *.err.png
 .DS_Store
 bench.output
 output
+*.csv
