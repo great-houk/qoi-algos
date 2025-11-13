@@ -1,7 +1,7 @@
 # Makefile for bench
 
 CXX      := g++
-CXXFLAGS := -std=c++17 -g -O3 -Wall -Wextra -I. -fopenmp
+CXXFLAGS := -std=c++2a -g -O3 -Wall -Wextra -I. -fopenmp
 LDFLAGS  := -lstdc++ -lm -lpng
 TARGET   := bench
 
@@ -10,7 +10,7 @@ OBJS := $(patsubst %.cpp, bin/%.o, $(SRCS))
 
 .PHONY: all clean run
 
-all: bin/$(TARGET)
+all: bin/$(TARGET) clean_errors
 
 bin/$(TARGET): $(OBJS)
 	@mkdir -p bin
@@ -21,7 +21,11 @@ bin/%.o: %.cpp
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 run:
-	./bin/$(TARGET) 10 images
+	./bin/$(TARGET) 1 images
+
+clean_errors:
+	rm -rf images/*.err.png
+	rm -rf images_small/*.err.png
 
 clean:
 	rm -rf bin

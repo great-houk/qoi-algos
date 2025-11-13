@@ -15,6 +15,8 @@
 #include "single-cpu/qoi-sc.hpp"
 #include "multi-cpu/qoi-mc.hpp"
 
+#include "stb/stb_image_write.h"
+
 struct Implementation {
 	std::string name;
 	IEncoder* encoder;
@@ -42,7 +44,7 @@ int main(int argc, char** argv) {
 		{"Single Threaded", new SingleCPUQOI(), new SingleCPUQOI()},
 		{"Multi Threaded", new MultiCPUQOI(), new MultiCPUQOI()},
 		// {"Libpng", new Libpng(), new Libpng()},
-		{"StbImage", new StbImage(), new StbImage()},
+		// {"StbImage", new StbImage(), new StbImage()},
 		// Comment to force formatting
 	};
 
@@ -128,6 +130,13 @@ int main(int argc, char** argv) {
 					total_decode_time += decode_time;
 					if (image.data != decoded_data) {
 						verified = false;
+						// Output file as png
+						std::string out_path =
+							image.path + "." + impl.name + ".err.png";
+						stbi_write_png(out_path.c_str(), image.width,
+									   image.height, image.channels,
+									   decoded_data.data(),
+									   image.width * image.channels);
 					}
 				}
 			}

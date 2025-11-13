@@ -8,24 +8,6 @@
 #include <iostream>
 #include <omp.h>
 
-#define QOI_OP_INDEX 0x00
-#define QOI_OP_DIFF 0x40
-#define QOI_OP_LUMA 0x80
-#define QOI_OP_RUN 0xc0
-#define QOI_OP_RGB 0xfe
-#define QOI_OP_RGBA 0xff
-#define QOI_MASK_2 0xc0
-
-#define QOI_COLOR_HASH(C) \
-	(C.rgba.r * 3 + C.rgba.g * 5 + C.rgba.b * 7 + C.rgba.a * 11)
-#define QOI_MAGIC                                                \
-	((((unsigned int)'q') << 24) | (((unsigned int)'o') << 16) | \
-	 (((unsigned int)'i') << 8) | (((unsigned int)'f')))
-#define QOI_HEADER_SIZE 14
-#define QOI_PIXELS_MAX ((unsigned int)400000000)
-#define CHECKPOINT_INTERVAL (1 << 20)  // 1 MiB
-#define INVALID_PIXEL 0xFF'FF'FF'00	   // 0 alpha pure white
-
 typedef union {
 	struct {
 		uint8_t r, g, b, a;
@@ -42,21 +24,6 @@ typedef union {
 } qoi_checkpoint_t;
 
 static const uint8_t qoi_padding[8] = {0, 0, 0, 0, 0, 0, 0, 1};
-
-static void qoi_write_32(uint8_t* bytes, uint32_t v) {
-	bytes[0] = (0xff000000 & v) >> 24;
-	bytes[1] = (0x00ff0000 & v) >> 16;
-	bytes[2] = (0x0000ff00 & v) >> 8;
-	bytes[3] = (0x000000ff & v);
-}
-
-static unsigned int qoi_read_32(const uint8_t* bytes) {
-	unsigned int a = bytes[0];
-	unsigned int b = bytes[1];
-	unsigned int c = bytes[2];
-	unsigned int d = bytes[3];
-	return a << 24 | b << 16 | c << 8 | d;
-}
 
 static void encode_segment(std::vector<uint8_t>& bytes,
 						   const uint8_t* pixels,
@@ -180,9 +147,6 @@ std::vector<uint8_t> MultiCPUQOI::encode(const std::vector<uint8_t>& pixels,
 
 	// Approximate 3 bytes per pixel
 	int num_segments = (total_px * 3) / CHECKPOINT_INTERVAL + 1;
-	// std::cout << "Encoding with " << num_segments << " segments." <<
-	// std::endl;
-	// int num_segments = 2;
 
 	// ceiling division == total_px / num_segments rounded up
 	int seg_px = (total_px + num_segments - 1) / num_segments;
@@ -190,7 +154,7 @@ std::vector<uint8_t> MultiCPUQOI::encode(const std::vector<uint8_t>& pixels,
 	std::vector<uint8_t> vecs[num_segments];
 	qoi_checkpoint_t checkpoints[num_segments];
 
-	// Process pixels
+// Process pixels
 #pragma omp parallel for schedule(static)
 	for (int s = 0; s < num_segments; s++) {
 		// Build checkpoint
@@ -207,51 +171,51 @@ std::vector<uint8_t> MultiCPUQOI::encode(const std::vector<uint8_t>& pixels,
 	}
 
 	// Update checkpoints
-	uint32_t total_bytes = QOI_HEADER_SIZE;
+	uint32_t data_nbytes = sizeof(QOIHeader);
 	for (int s = 0; s < num_segments; s++) {
-		checkpoints[s].fields.byte_offset = total_bytes;
-		total_bytes += vecs[s].size();
+		checkpoints[s].fields.byte_offset = data_nbytes;
+		data_nbytes += vecs[s].size();
 	}
 
 	// Allocate output bytes
-	std::vector<uint8_t> bytes;
-	bytes.reserve(total_bytes + sizeof(qoi_padding) +
-				  num_segments * sizeof(qoi_checkpoint_t) +
-				  sizeof(qoi_padding));
-	bytes.resize(total_bytes);
-	auto bytes_ptr = bytes.data();
+	uint32_t total_bytes = data_nbytes + sizeof(qoi_padding) +
+						   num_segments * sizeof(qoi_checkpoint_t) +
+						   sizeof(qoi_padding);
+	uint8_t* bytes = new uint8_t[total_bytes];
 
 	// Fill in header
-	qoi_write_32(bytes_ptr, QOI_MAGIC);
-	qoi_write_32(bytes_ptr + 4, spec.width);
-	qoi_write_32(bytes_ptr + 8, spec.height);
-	bytes_ptr[12] = spec.channels;
-	bytes_ptr[13] = spec.colorspace;
+	QOIHeader header = {.fields = {
+							.magic = QOI_MAGIC,
+							.width = spec.width,
+							.height = spec.height,
+							.channels = spec.channels,
+							.colorspace = spec.colorspace,
+						}};
+	// QOI Uses big endian for some reason :(
+	header.fields.magic = __builtin_bswap32(header.fields.magic);
+	header.fields.width = __builtin_bswap32(header.fields.width);
+	header.fields.height = __builtin_bswap32(header.fields.height);
+	std::memcpy(bytes, header.b, sizeof(QOIHeader));
 
 // Combine segments
 #pragma omp parallel for schedule(static)
 	for (int s = 0; s < num_segments; s++) {
 		// Append segment data
-		std::vector<uint8_t>& segment_bytes = vecs[s];
+		auto& segment_bytes = vecs[s];
 		int start = checkpoints[s].fields.byte_offset;
-		std::memcpy(bytes_ptr + start, segment_bytes.data(),
-					segment_bytes.size());
+		std::memcpy(bytes + start, segment_bytes.data(), segment_bytes.size());
 	}
 
 	// Append footer, checkpoints, and second footer
-	for (auto b : qoi_padding) {
-		bytes.push_back(b);
-	}
+	std::memcpy(bytes + data_nbytes, qoi_padding, sizeof(qoi_padding));
+	int checkpoint_offset = data_nbytes + sizeof(qoi_padding);
 	for (auto c : checkpoints) {
-		for (auto b : c.v) {
-			bytes.push_back(b);
-		}
+		std::memcpy(bytes + checkpoint_offset, c.v, sizeof(c.v));
+		checkpoint_offset += sizeof(c.v);
 	}
-	for (auto b : qoi_padding) {
-		bytes.push_back(b);
-	}
+	std::memcpy(bytes + checkpoint_offset, qoi_padding, sizeof(qoi_padding));
 
-	return bytes;
+	return std::vector<uint8_t>(bytes, bytes + total_bytes);
 }
 
 std::vector<uint8_t> MultiCPUQOI::decode(
@@ -259,18 +223,20 @@ std::vector<uint8_t> MultiCPUQOI::decode(
 	QOIDecoderSpec& spec) {
 	// Read in header
 	const unsigned char* bytes = encoded_data.data();
-	int p = 0;
 	unsigned int header_magic;
 
-	if (encoded_data.size() < QOI_HEADER_SIZE + sizeof(qoi_padding)) {
+	if (encoded_data.size() < sizeof(QOIHeader) + sizeof(qoi_padding)) {
 		return {};
 	}
 
-	header_magic = qoi_read_32(&bytes[0]);
-	spec.width = qoi_read_32(&bytes[sizeof(uint32_t) * 1]);
-	spec.height = qoi_read_32(&bytes[sizeof(uint32_t) * 2]);
-	spec.channels = bytes[sizeof(uint32_t) * 3];
-	spec.colorspace = bytes[sizeof(uint32_t) * 3 + 1];
+	QOIHeader header;
+	std::memcpy(header.b, bytes, sizeof(QOIHeader));
+	// Big Endian :(
+	header_magic = __builtin_bswap32(header.fields.magic);
+	spec.width = __builtin_bswap32(header.fields.width);
+	spec.height = __builtin_bswap32(header.fields.height);
+	spec.channels = header.fields.channels;
+	spec.colorspace = header.fields.colorspace;
 
 	if (spec.width == 0 || spec.height == 0 || spec.channels < 3 ||
 		spec.channels > 4 || spec.colorspace > 1 || header_magic != QOI_MAGIC ||
@@ -280,6 +246,8 @@ std::vector<uint8_t> MultiCPUQOI::decode(
 
 	int channels = spec.channels;
 	int px_len = spec.width * spec.height * channels;
+	int max_size = spec.width * spec.height * (spec.channels + 1) +
+				   sizeof(QOIHeader) + sizeof(qoi_padding);
 
 	// Read in checkpoints
 	typedef union {
@@ -291,60 +259,49 @@ std::vector<uint8_t> MultiCPUQOI::decode(
 		// Only 8, since next_px_pos is not stored in file
 		char v[8];
 	} checkpoint_span_t;
-	std::vector<checkpoint_span_t> checkpoints;
-	int max_size = spec.width * spec.height * (spec.channels + 1) +
-				   QOI_HEADER_SIZE + sizeof(qoi_padding);
 	int max_num_checkpoints = (max_size / CHECKPOINT_INTERVAL) + 1;
-	int last_cp_px_pos = px_len;
+	std::vector<checkpoint_span_t> checkpoints;
+	checkpoints.reserve(max_num_checkpoints);
 	// Read backwards to check for double padding
 	bool found_double_padding = false;
 	int p_size = (int)sizeof(qoi_padding);
 	int c_size = (int)sizeof(qoi_checkpoint_t);
-	int cp_p = (int)encoded_data.size() - p_size;
+	int last_cp_px_pos = px_len;
+	const uint8_t* cp_p = encoded_data.data() + encoded_data.size() - p_size;
 	for (int i = 0; i < max_num_checkpoints; i++) {
-		bool is_padding = true;
-		for (int j = 0; j < (int)sizeof(qoi_padding); j++) {
-			if (encoded_data[cp_p - p_size + j] != qoi_padding[j]) {
-				is_padding = false;
-				break;
-			}
-		}
-		if (is_padding) {
+		// Check if we found the second padding
+		uint8_t padding[8];
+		std::memcpy(padding, cp_p - p_size, p_size);
+		if (std::memcmp(padding, qoi_padding, p_size) == 0) {
 			found_double_padding = true;
-			// std::cout << "Found " << i << " checkpoints in QOI data."
-			// 		  << std::endl;
 			break;
 		}
+		// Read in checkpoint
 		checkpoint_span_t cp;
-		for (int j = 0; j < c_size; j++) {
-			cp.v[j] = encoded_data[cp_p - c_size + j];
-		}
-		// We're reading backwards, so this is right
+		std::memcpy(cp.v, cp_p - c_size, c_size);
+		// We're reading backwards, so set next_px_pos from last read
 		cp.fields.next_px_pos = last_cp_px_pos;
 		last_cp_px_pos = cp.fields.px_pos;
 		checkpoints.push_back(cp);
+		// Move backwards to continue reading cps
 		cp_p -= sizeof(qoi_checkpoint_t);
 	}
 	if (!found_double_padding) {
 		// No double padding found, reset to no checkpoints
 		checkpoints.clear();
-		checkpoints.push_back((checkpoint_span_t){.fields = {p, 0, px_len}});
+		checkpoints.push_back(
+			(checkpoint_span_t){.fields = {sizeof(QOIHeader), 0, px_len}});
 		std::cout << "WARNING: No checkpoints found in QOI data, decoding from "
 					 "beginning only."
 				  << std::endl;
 	}
 
 	// Initialize stable state
-	std::vector<uint8_t> pixels;
-	pixels.resize(px_len);
+	uint8_t* pixels = new uint8_t[px_len];
 	int chunks_len = encoded_data.size() - (int)sizeof(qoi_padding);
 
 #pragma omp parallel for schedule(static)
 	for (auto cp : checkpoints) {
-		// std::cout << "Decoding from checkpoint at byte offset "
-		// 		  << cp.fields.byte_offset << ", pixel position "
-		// 		  << cp.fields.px_pos << std::endl;
-
 		// Set per checkpoint variables
 		int p_local = cp.fields.byte_offset;
 		int px_pos = cp.fields.px_pos;
@@ -355,10 +312,7 @@ std::vector<uint8_t> MultiCPUQOI::decode(
 		int run = 0;
 
 		memset(index, 0, sizeof(index));
-		px.rgba.r = 0;
-		px.rgba.g = 0;
-		px.rgba.b = 0;
-		px.rgba.a = 255;
+		px.v = 0x00'00'00'FF;  // Full alpha black
 
 		for (; px_pos < cp.fields.next_px_pos; px_pos += channels) {
 			if (run > 0) {
@@ -404,5 +358,5 @@ std::vector<uint8_t> MultiCPUQOI::decode(
 		}
 	}
 
-	return pixels;
+	return std::vector<uint8_t>(pixels, pixels + px_len);
 }
