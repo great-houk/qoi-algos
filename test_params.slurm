@@ -6,6 +6,12 @@
 #SBATCH --output=test_params.%j.out
 
 cd "$SLURM_SUBMIT_DIR"
+# Prefer g++-14 when available (sbatch job); otherwise fall back to system g++.
+if command -v g++-14 >/dev/null 2>&1; then
+	export CXX=g++-14
+else
+	export CXX=g++
+fi
 
 # Configurable list of CPU counts to sweep. Adjust as needed.
 CPUS_LIST=(1 2 4 8 16 32)
