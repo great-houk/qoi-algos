@@ -3,24 +3,6 @@
 #include <cstring>
 #include <iostream>
 
-#define QOI_OP_INDEX 0x00
-#define QOI_OP_DIFF 0x40
-#define QOI_OP_LUMA 0x80
-#define QOI_OP_RUN 0xc0
-#define QOI_OP_RGB 0xfe
-#define QOI_OP_RGBA 0xff
-#define QOI_MASK_2 0xc0
-
-#define QOI_COLOR_HASH(C) \
-	(C.rgba.r * 3 + C.rgba.g * 5 + C.rgba.b * 7 + C.rgba.a * 11)
-#define QOI_MAGIC                                                \
-	((((unsigned int)'q') << 24) | (((unsigned int)'o') << 16) | \
-	 (((unsigned int)'i') << 8) | (((unsigned int)'f')))
-#define QOI_HEADER_SIZE 14
-#define QOI_PIXELS_MAX ((unsigned int)400000000)
-#define CHECKPOINT_INTERVAL (1 << 19)  // 0.5 MiB
-#define INVALID_PIXEL 0xFF'FF'FF'00	   // 0 alpha pure white
-
 typedef union {
 	struct {
 		unsigned char r, g, b, a;
@@ -70,7 +52,7 @@ std::vector<uint8_t> SingleCPUQOI::encode(const std::vector<uint8_t>& data,
 	}
 
 	int max_size = spec.width * spec.height * (spec.channels + 1) +
-				   QOI_HEADER_SIZE + sizeof(qoi_padding);
+				   sizeof(QOIHeader) + sizeof(qoi_padding);
 	int checkpoint_size =
 		(max_size / CHECKPOINT_INTERVAL) * sizeof(qoi_checkpoint_t) +
 		sizeof(qoi_padding);
@@ -215,7 +197,7 @@ std::vector<uint8_t> SingleCPUQOI::decode(
 	int p = 0;
 	unsigned int header_magic;
 
-	if (encoded_data.size() < QOI_HEADER_SIZE + sizeof(qoi_padding)) {
+	if (encoded_data.size() < sizeof(QOIHeader) + sizeof(qoi_padding)) {
 		return {};
 	}
 
@@ -246,7 +228,7 @@ std::vector<uint8_t> SingleCPUQOI::decode(
 	} checkpoint_span_t;
 	std::vector<checkpoint_span_t> checkpoints;
 	int max_size = spec.width * spec.height * (spec.channels + 1) +
-				   QOI_HEADER_SIZE + sizeof(qoi_padding);
+				   sizeof(QOIHeader) + sizeof(qoi_padding);
 	int max_num_checkpoints = (max_size / CHECKPOINT_INTERVAL) + 1;
 	int last_cp_px_pos = px_len;
 	// Read backwards to check for double padding

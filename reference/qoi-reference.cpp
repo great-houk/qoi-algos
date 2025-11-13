@@ -1,6 +1,7 @@
 #include "qoi-reference.hpp"
 #include <cstdlib>
 #include <cstring>
+#include <iostream>
 
 #define QOI_OP_INDEX 0x00
 #define QOI_OP_DIFF 0x40
@@ -149,6 +150,13 @@ std::vector<uint8_t> ReferenceQOI::encode(const std::vector<uint8_t>& data,
 	}
 
 	bytes.resize(p);
+
+	double ratio =
+		static_cast<double>(p) / static_cast<double>(spec.width * spec.height);
+	std::cout << "Encoded " << spec.width << "x" << spec.height << " ("
+			  << spec.channels << " channels) to " << p << " bytes ("
+			  << (ratio * 100.0) << "%)\n";
+
 	return bytes;
 }
 

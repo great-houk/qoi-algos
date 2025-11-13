@@ -6,6 +6,8 @@
 #include <dirent.h>
 #include <algorithm>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 
 #include "stb/stb_image.h"
 #include "qoi.hpp"
@@ -14,6 +16,8 @@
 #include "reference/stb_image.hpp"
 #include "single-cpu/qoi-sc.hpp"
 #include "multi-cpu/qoi-mc.hpp"
+
+#include "stb/stb_image_write.h"
 
 struct Implementation {
 	std::string name;
@@ -42,7 +46,7 @@ int main(int argc, char** argv) {
 		{"Single Threaded", new SingleCPUQOI(), new SingleCPUQOI()},
 		{"Multi Threaded", new MultiCPUQOI(), new MultiCPUQOI()},
 		// {"Libpng", new Libpng(), new Libpng()},
-		{"StbImage", new StbImage(), new StbImage()},
+		// {"StbImage", new StbImage(), new StbImage()},
 		// Comment to force formatting
 	};
 
@@ -53,25 +57,36 @@ int main(int argc, char** argv) {
 		while ((ent = readdir(dir)) != NULL) {
 			std::string filename = ent->d_name;
 			if (filename.size() > 4 &&
-				filename.substr(filename.size() - 4) == ".png") {
+				filename.substr(filename.size() - 4) == ".qoi") {
 				ImageData img_data;
 				img_data.path = images_dir + "/" + filename;
 				img_data.size = std::filesystem::file_size(img_data.path);
 
-				// Request 4 channels (RGBA) explicitly for consistent loading
-				unsigned char* img =
-					stbi_load(img_data.path.c_str(), &img_data.width,
-							  &img_data.height, &img_data.channels, 4);
-				if (img == NULL) {
-					std::cerr << "Error loading image: " << img_data.path
+				// Read whole .qoi file into memory
+				std::ifstream in(img_data.path, std::ios::binary);
+				if (!in) {
+					std::cerr << "Error opening file: " << img_data.path
 							  << std::endl;
 					continue;
 				}
-				img_data.channels = 4;	// Force to 4 channels as requested
-				img_data.data.assign(
-					img,
-					img + img_data.width * img_data.height * img_data.channels);
-				stbi_image_free(img);
+				std::vector<uint8_t> file_bytes(
+					(std::istreambuf_iterator<char>(in)),
+					std::istreambuf_iterator<char>());
+
+				// Decode QOI using the reference decoder to obtain raw pixels
+				ReferenceQOI ref;
+				QOIDecoderSpec spec{};
+				auto pixels = ref.decode(file_bytes, spec);
+				if (pixels.empty()) {
+					std::cerr << "Error decoding QOI: " << img_data.path
+							  << std::endl;
+					continue;
+				}
+
+				img_data.width = spec.width;
+				img_data.height = spec.height;
+				img_data.channels = spec.channels;
+				img_data.data = std::move(pixels);
 				images.push_back(img_data);
 			}
 		}
@@ -128,6 +143,17 @@ int main(int argc, char** argv) {
 					total_decode_time += decode_time;
 					if (image.data != decoded_data) {
 						verified = false;
+						// Output error image
+						std::string out_path =
+							image.path + "." + impl.name + ".err.qoi";
+						ReferenceQOI ref;
+						auto err_encoded = ref.encode(decoded_data, enc_spec);
+						std::ofstream out(out_path, std::ios::binary);
+						if (out) {
+							out.write(reinterpret_cast<const char*>(
+										  err_encoded.data()),
+									  err_encoded.size());
+						}
 					}
 				}
 			}
