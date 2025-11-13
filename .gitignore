@@ -1,5 +1,6 @@
 .vscode
 bench
+convert
 *.o
 *.err.png
 .DS_Store
