@@ -35,7 +35,8 @@ static void encode_segment(std::vector<uint8_t>& bytes,
 	qoi_rgba_t px = {.v = 0x00'00'00'FF};  // Full alpha black
 	int run = 0;
 
-	bytes.reserve(num_px * 3);
+	// Assume worst case, so we don't need to resize
+	bytes.reserve(num_px * (channels + 1));
 
 	for (size_t px_pos = 0; px_pos < num_px * channels; px_pos += channels) {
 		// loads current pixel RGB
@@ -145,8 +146,9 @@ std::vector<uint8_t> MultiCPUQOI::encode(const std::vector<uint8_t>& pixels,
 	int channels = spec.channels;
 	int total_px = spec.width * spec.height;
 
-	// Approximate 3 bytes per pixel
-	int num_segments = (total_px * 3) / CHECKPOINT_INTERVAL + 1;
+	int num_segments =
+		(total_px * PIXEL_TO_ENCODE_RATIO) / CHECKPOINT_INTERVAL + 1;
+	int num_segs_per_job = 4;
 
 	// ceiling division == total_px / num_segments rounded up
 	int seg_px = (total_px + num_segments - 1) / num_segments;
@@ -156,18 +158,21 @@ std::vector<uint8_t> MultiCPUQOI::encode(const std::vector<uint8_t>& pixels,
 
 // Process pixels
 #pragma omp parallel for schedule(static)
-	for (int s = 0; s < num_segments; s++) {
-		// Build checkpoint
-		const int start_px = s * seg_px * channels;
-		const int end_px =
-			std::min(total_px * channels, start_px + seg_px * channels);
-		// 0 Byte offset since we don't know it yet
-		checkpoints[s] = {
-			.fields = {0, static_cast<int32_t>(s * seg_px * channels)}};
+	for (int s = 0; s < num_segments; s += num_segs_per_job) {
+		for (int j = 0; j < num_segs_per_job && s + j < num_segments; j++) {
+			// Build checkpoint
+			const int start_px = (s + j) * seg_px * channels;
+			const int end_px =
+				std::min(total_px * channels, start_px + seg_px * channels);
+			// 0 Byte offset since we don't know it yet
+			checkpoints[s + j] = {
+				.fields = {0,
+						   static_cast<int32_t>((s + j) * seg_px * channels)}};
 
-		// Encode slice
-		encode_segment(vecs[s], &pixels[start_px], channels,
-					   (end_px - start_px) / channels);
+			// Encode slice
+			encode_segment(vecs[s + j], &pixels[start_px], channels,
+						   (end_px - start_px) / channels);
+		}
 	}
 
 	// Update checkpoints
@@ -181,7 +186,8 @@ std::vector<uint8_t> MultiCPUQOI::encode(const std::vector<uint8_t>& pixels,
 	uint32_t total_bytes = data_nbytes + sizeof(qoi_padding) +
 						   num_segments * sizeof(qoi_checkpoint_t) +
 						   sizeof(qoi_padding);
-	uint8_t* bytes = new uint8_t[total_bytes];
+	auto bytes_v = std::vector<uint8_t>(total_bytes);
+	uint8_t* bytes = bytes_v.data();
 
 	// Fill in header
 	QOIHeader header = {.fields = {
@@ -215,7 +221,7 @@ std::vector<uint8_t> MultiCPUQOI::encode(const std::vector<uint8_t>& pixels,
 	}
 	std::memcpy(bytes + checkpoint_offset, qoi_padding, sizeof(qoi_padding));
 
-	return std::vector<uint8_t>(bytes, bytes + total_bytes);
+	return bytes_v;
 }
 
 std::vector<uint8_t> MultiCPUQOI::decode(
