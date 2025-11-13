@@ -2,3 +2,4 @@
 bench
 *.o
 *.err.png
+.DS_Store
