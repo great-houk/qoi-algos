@@ -4,7 +4,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=12
 #SBATCH --gpus-per-task=0
-#SBATCH --output=bench.output
+#SBATCH --output=output
 
 cd "$SLURM_SUBMIT_DIR"
 # Prefer g++-14 when available (sbatch job); otherwise fall back to system g++.
@@ -16,4 +16,4 @@ fi
 
 # Build and run
 make
-./bin/bench 1 images_small
+./bin/bench 2 images

@@ -3,3 +3,5 @@ bench
 *.o
 *.err.png
 .DS_Store
+bench.output
+output
