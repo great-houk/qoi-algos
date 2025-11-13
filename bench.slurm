@@ -1,4 +1,4 @@
-#!/usr/bin/env zsh
+#!/usr/bin/env bash
 #SBATCH --partition=instruction
 #SBATCH --time=00:05:00
 #SBATCH --ntasks=1
@@ -6,6 +6,14 @@
 #SBATCH --gpus-per-task=0
 #SBATCH --output=bench.output
 
-cd $SLURM_SUBMIT_DIR
+cd "$SLURM_SUBMIT_DIR"
+# Prefer g++-14 when available (sbatch job); otherwise fall back to system g++.
+if command -v g++-14 >/dev/null 2>&1; then
+	export CXX=g++-14
+else
+	export CXX=g++
+fi
+
+# Build and run
 make
 ./bin/bench 1 images_small

@@ -1,6 +1,6 @@
+CXX      ?= g++
 # Makefile for bench
-
-CXX      := g++
+# The compiler can be overridden by the environment (e.g. bench.slurm exports CXX=g++-14)
 CXXFLAGS := -std=c++2a -g -O3 -Wall -Wextra -I. -fopenmp
 LDFLAGS  := -lstdc++ -lm -lpng
 TARGET   := bench
