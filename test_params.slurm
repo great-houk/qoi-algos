@@ -2,7 +2,7 @@
 #SBATCH --partition=instruction
 #SBATCH --time=00:30:00
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=32
+#SBATCH --cpus-per-task=64
 #SBATCH --output=test_params.%j.out
 
 cd "$SLURM_SUBMIT_DIR"
@@ -14,7 +14,7 @@ else
 fi
 
 # Configurable list of CPU counts to sweep. Adjust as needed.
-CPUS_LIST=(1 2 4 8 16 32)
+CPUS_LIST=(1 4 16 32 64)
 
 # Path to the CSV output (will be created/updated by test_params)
 OUT_CSV="test_params.csv"

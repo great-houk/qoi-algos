@@ -111,7 +111,10 @@ int main(int argc, char** argv) {
 	// --- Adjustable parameter ranges ---
 	// Change these vectors to adjust the sweep ranges.
 	std::vector<int> checkpoint_intervals;
-	for (int i = (1 << 15); i <= (1 << 24); i <<= 1) {
+	int low = (1 << 10);
+	int high = (1 << 20);
+	int step = (high - low) / 10;
+	for (int i = low; i <= high; i += step) {
 		checkpoint_intervals.push_back(i);
 	}
 	std::vector<int> checkpoints_per_segment = {2};
