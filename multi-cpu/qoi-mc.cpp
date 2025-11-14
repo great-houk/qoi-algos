@@ -149,9 +149,7 @@ std::vector<uint8_t> MultiCPUQOI::encode(const std::vector<uint8_t>& pixels,
 	int num_segments =
 		(total_px * PIXEL_TO_ENCODE_RATIO) / this->CHECKPOINT_INTERVAL + 1;
 	int checks_per_seg = this->CHECKPOINTS_PER_SEGMENT;
-
-	// ceiling division == total_px / num_segments rounded up
-	int seg_px = (total_px + num_segments - 1) / num_segments;
+	int seg_px = total_px / num_segments;
 
 	std::vector<uint8_t> vecs[num_segments];
 	qoi_checkpoint_t checkpoints[num_segments];
@@ -162,8 +160,9 @@ std::vector<uint8_t> MultiCPUQOI::encode(const std::vector<uint8_t>& pixels,
 		for (int j = 0; j < checks_per_seg && s + j < num_segments; j++) {
 			// Build checkpoint
 			const int start_px = (s + j) * seg_px * channels;
-			const int end_px =
-				std::min(total_px * channels, start_px + seg_px * channels);
+			const int end_px = (s + j == num_segments - 1)
+								   ? total_px * channels
+								   : start_px + seg_px * channels;
 			// 0 Byte offset since we don't know it yet
 			checkpoints[s + j] = {
 				.fields = {0,
