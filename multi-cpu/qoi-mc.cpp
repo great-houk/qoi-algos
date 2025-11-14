@@ -303,7 +303,7 @@ std::vector<uint8_t> MultiCPUQOI::decode(
 	}
 
 	// Initialize stable state
-	uint8_t* pixels = new uint8_t[px_len];
+	std::vector<uint8_t> pixels(px_len);
 	int chunks_len = encoded_data.size() - (int)sizeof(qoi_padding);
 
 #pragma omp parallel for schedule(static)
@@ -364,5 +364,5 @@ std::vector<uint8_t> MultiCPUQOI::decode(
 		}
 	}
 
-	return std::vector<uint8_t>(pixels, pixels + px_len);
+	return pixels;
 }
