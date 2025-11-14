@@ -110,9 +110,11 @@ int main(int argc, char** argv) {
 
 	// --- Adjustable parameter ranges ---
 	// Change these vectors to adjust the sweep ranges.
-	std::vector<int> checkpoint_intervals = {1 << 18, 1 << 19, 1 << 20, 1 << 21,
-											 1 << 22};	// e.g., 256k .. 2M
-	std::vector<int> checkpoints_per_segment = {1, 2, 4, 6, 8, 10, 12, 14, 16};
+	std::vector<int> checkpoint_intervals;
+	for (int i = (1 << 15); i <= (1 << 24); i <<= 1) {
+		checkpoint_intervals.push_back(i);
+	}
+	std::vector<int> checkpoints_per_segment = {2};
 
 	// Open CSV. If it exists, append rows; otherwise create and write header
 	// which includes `cpus`.
