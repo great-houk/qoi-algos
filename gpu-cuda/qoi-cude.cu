@@ -23,7 +23,7 @@
             exit(EXIT_FAILURE); \
         } \
     } while(0)
-    
+
 typedef union {
     struct {
         uint8_t r, g, b, a;
@@ -38,3 +38,35 @@ typedef union {
     uint8_t v[8];
 } qoi_checkpoint_t;
 static const uint8_t qoi_padding[8] = {0, 0, 0, 0, 0, 0, 0, 1};
+
+_global__ void encode_segment_kernel(
+    const uint8_t* pixels,
+    uint8_t* d_output_segments,
+    int32_t* d_segment_sizes,
+    int segment_idx,
+    int start_px,
+    int num_px,
+    int channels,
+    int total_px,
+    int max_segment_size
+) {
+    if(threadIdx.x != 0) return;
+    // We're declaring a shared memory array of 64 pixels. 
+    // We need this to be shared since shared memory is visible 
+    // to all threads in a block and faster than global memory
+    __shared__ qoi_rgba_t index[64];
+    // We're initializing all 64 caches slots to INVALID_PIXEL
+    for(int i = 0; i < 64; i++) {
+        index[i].v = INVALID_PIXEL;
+    }
+    qoi_rgba_t px_prev;
+    px_prev.v = INVALID_PIXEL;
+    qoi_rgba_t px;
+    px.rgba.r = 0;
+    px.rgba.g = 0;
+    px.rgba.b = 0;
+    px.rgba.a = 255;
+    int run = 0;
+    int out_pos = 0;
+    uint8_t* segment_out = d_output_segments + segment_idx * max_segment_size;
+}
