@@ -174,3 +174,79 @@ __global__ void encode_segment_kernel(
     d_segment_sizes[segment_idx] = out_pos;
 
 }
+
+__global__ void decode_segment_kernel(
+    const uint8_t* d_encoded,
+    uint8_t* d_pixels,
+    qoi_checkpoint_t checkpoint,
+    int next_px_pos,
+    int channels,
+    int chuncks_len
+) {
+
+    if(threadIdx.x != 0) return;
+
+    // Initalize per checkpoint state
+    __shared__ qoi_rgba_t index[64];
+    for(int i = 0; i < 64; i++) {
+        index[i].v = 0;
+    }
+
+    qoi_rgba_t px;
+    px.rgba.r = 0;
+    px.rgba.g = 0;
+    px.rgba.b = 0;
+    px.rgba.a = 255;
+
+    int run = 0;
+    // Set per checkpoint variables
+    int p = checkpoint.fields.byte_offset;
+    int px_pos = checkpoint.fields.px_pos;
+
+    while(px_pos < next_px_pos) {
+        if(run>0) {
+            run--;
+        } else if (p < chuncks_len) {
+            uint8_t b1 = d_encoded[p++];
+            if(b1 == QOI_OP_RGB) {
+                px.rgba.r = d_encoded[p++];
+                px.rgba.g = d_encoded[p++];
+                px.rgba.b = d_encoded[p++];
+            }
+            else if(b1 == QOI_OP_RGBA) {
+                px.rgba.r = d_encoded[p++];
+                px.rgba.g = d_encoded[p++];
+                px.rgba.b = d_encoded[p++];
+                px.rgba.a = d_encoded[p++];
+
+            }
+            else if((b1 & QOI_MASK_2) == QOI_OP_INDEX) {
+                px = index[b1 & 0x3F];
+            }
+            else if((b1 & QOI_MASK_2) == QOI_OP_DIFF) {
+                px.rgba.r += ((b1 >> 4) & 0x03) - 2;
+                px.rgba.g += ((b1 >> 4) & 0x03) - 2;
+                px.rgba.b += (b1 & 0x03) - 2;
+            }
+            else if((b1 & QOI_MASK_2) == QOI_OP_LUMA) {
+                uint8_t b2 = d_encoded[p++];
+                int vg = (b1 & 0x3F) - 32;
+                px.rgba.r += vg - 8 + ((b2 >> 4) & 0x0F);
+                px.rgba.g += vg;
+                px.rgba.b += vg - 8 + (b2 & 0x0F);
+            }
+            else if((b1 & QOI_MASK_2) == QOI_OP_RUN) {
+                run = (b1 & 0x3F);
+            }
+            index[QOI_COLOR_HASH(px) & 63] = px;
+
+        }
+        d_pixels[px_pos + 0] = px.rgba.r;
+        d_pixels[px_pos + 1] = px.rgba.g;
+        d_pixels[px_pos + 2] = px.rgba.b;
+        if(channels == 4) {
+            d_pixels[px_pos + 3] = px.rgba.a;
+        }
+        px_pos += channels;
+    }
+}
