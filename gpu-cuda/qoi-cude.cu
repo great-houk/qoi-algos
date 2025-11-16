@@ -250,3 +250,100 @@ __global__ void decode_segment_kernel(
         px_pos += channels;
     }
 }
+
+std::vector<uint8_t> CUDAQOI::encode(const std::vector<uint8_t>& pixels,
+    QOIEncoderSpec& spec) {
+    if (spec.width == 0 || spec.height == 0 || spec.channels < 3 ||
+		spec.channels > 4 || spec.colorspace > 1 ||
+		spec.height >= QOI_PIXELS_MAX / spec.width) {
+		return {};
+	}
+	int channels = spec.channels;
+	int total_px = spec.width * spec.height;
+
+	int num_segments =
+		(total_px * PIXEL_TO_ENCODE_RATIO) / this->CHECKPOINT_INTERVAL + 1;
+	int checks_per_seg = this->CHECKPOINTS_PER_SEGMENT;
+	int seg_px = total_px / num_segments;
+
+    std::vector<qoi_checkpoint_t> checkpoints(num_segments);
+    uint8_t* d_pixels;
+    uint8_t* d_output_segments;
+    int32_t* d_segment_sizes;
+
+    size_t pixel_bytes = total_px * channels;
+    int max_segment_size = seg_px * (channels + 1);
+    size_t total_output_size = num_segments * max_segment_size;
+
+    CUDA_CHECK(cudaMalloc(&d_pixels, pixel_bytes));
+    CUDA_CHECK(cudeMalloc(&d_output_segments, total_output_size));
+    CUDA_CHECK(cudeMalloc(&d_segment_sizes, num_segments * sizeof(int32_t)));
+    CUDA_CHECK(cudaMemcpy(d_pixels, pixels.data(), pixel_bytes, cudaMemcpyHostToDevice));
+    int threads_per_block = 32;
+    for(int s = 0; s < num_segments; s++) {
+        int start_px = s * seg_px;
+        int end_px = (s== num_segments - 1) ? total_px : start_px + seg_px;
+        int num_px = end_px - start_px;
+        encode_segment_kernel<<<1,threads_per_block>>>(
+            d_pixels, d_output_segments, d_segment_sizes,
+            s, start_px, num_px, channels, total_px, max_segment_size
+        );
+
+    }
+
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    std::vector<int32_t> segment_size(num_segments);
+    CUDA_CHECK(cudeMemcpy(segment_sizes.data(), d_segment_sizes, 
+    num_segments * sizeof(int32_t), cudaMemcpyDeviceToHost));
+    // Update checkpoints
+    uint32_t data_nbytes = sizeof(QOIHeader);
+    for (int s = 0; s < num_segments; s++) {
+		checkpoints[s].fields.byte_offset = data_nbytes;
+		checkpoints[s].fields.px_pos = s * seg_px * channels;
+        data_nbytes += segment_size[s];
+	}
+
+    // Allocate output bytes
+	uint32_t total_bytes = data_nbytes + sizeof(qoi_padding) +
+						   num_segments * sizeof(qoi_checkpoint_t) +
+						   sizeof(qoi_padding);
+    std::vector<uint8_t>output(total_bytes);
+   	QOIHeader header = {.fields = {
+							.magic = QOI_MAGIC,
+							.width = spec.width,
+							.height = spec.height,
+							.channels = spec.channels,
+							.colorspace = spec.colorspace,
+						}};
+    // QOI Uses big endian for some reason :(
+	header.fields.magic = __builtin_bswap32(header.fields.magic);
+	header.fields.width = __builtin_bswap32(header.fields.width);
+	header.fields.height = __builtin_bswap32(header.fields.height);
+	std::memcpy(output.data(), header.b, sizeof(QOIHeader));
+    for(int s = 0; s < num_segments; s++) {
+        int offset = checkpoints[s].fields.byte_offset;
+        int size = segment_size[s];
+        CUDA_CHECK(cudaMemcpy(
+            output.data() + offset,
+            d_output_segments + s * max_segment_size,
+            size,
+            cudaMemcpyDeviceToHost
+        ))
+    }
+
+    // Append footer, checkpoints, and second footer
+	std::memcpy(output.data() + data_nbytes, qoi_padding, sizeof(qoi_padding));
+    int checkpoint_offset = data_nbytes + sizeof(qoi_padding);
+	for (auto c : checkpoints) {
+		std::memcpy(output.data() + checkpoint_offset, c.v, sizeof(c.v));
+		checkpoint_offset += sizeof(c.v);
+	}
+	std::memcpy(output.data() + checkpoint_offset, qoi_padding, sizeof(qoi_padding));
+    CUDA_CHECK(cudaFree(d_pixels));
+    CUDA_CHECK(cudaFree(d_output_segments));
+    CUDA_CHECK(cudaFree(d_segment_sizes));
+
+    return output;
+
+}
