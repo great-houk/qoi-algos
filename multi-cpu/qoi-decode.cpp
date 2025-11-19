@@ -1,5 +1,4 @@
 #include "../reference/qoi-reference.hpp"
-#include "../stb/qoi.hpp"
 #include <fstream>
 #include <iostream>
 #include <string>
