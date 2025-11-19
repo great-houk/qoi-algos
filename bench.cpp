@@ -16,7 +16,7 @@
 #include "reference/stb_image.hpp"
 #include "single-cpu/qoi-sc.hpp"
 #include "multi-cpu/qoi-mc.hpp"
-#include "gpu-cuda/qoi-cude.hpp"
+#include "gpu-cuda/qoi-cuda.hpp"
 #include "stb/stb_image_write.h"
 
 struct Implementation {
