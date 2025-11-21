@@ -2,7 +2,7 @@ CXX      ?= g++
 NVCC     ?= nvcc
 # Makefile for bench
 # The compiler can be overridden by the environment (e.g. bench.slurm exports CXX=g++-14)
-CXXFLAGS := -std=c++2a -g -O3 -Wall -Wextra -I. -fopenmp
+CXXFLAGS := -std=c++2a -g -O3 -Wall -Wextra -I. -fopenmp -rdc=true
 NVCCFLAGS := -std=c++17 -O3 -I. --compiler-options -fPIC
 LDFLAGS  := -lstdc++ -lm -lpng
 CUDA_LDFLAGS := -L/usr/local/cuda/lib64 -lcudart

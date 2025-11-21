@@ -52,7 +52,7 @@ __global__ void encode_segment_kernel(
     int num_segments
 ) {
 
-    int segment_idx = blockIdx.x;
+    int segment_idx = blockIdx.x + blockIdx.x * threadIdx.x;
 
     // We're declaring a shared memory array of 64 pixels. 
     // We need this to be shared since shared memory is visible 
@@ -285,8 +285,10 @@ std::vector<uint8_t> CUDAQOI::encode(const std::vector<uint8_t>& pixels,
     CUDA_CHECK(cudaMalloc(&d_output_segments, total_output_size));
     CUDA_CHECK(cudaMalloc(&d_segment_sizes, num_segments * sizeof(int32_t)));
     CUDA_CHECK(cudaMemcpy(d_pixels, pixels.data(), pixel_bytes, cudaMemcpyHostToDevice));
-    int threads_per_block = 1;
-    int blocks = num_segments;
+
+    // TODO look at work swapping to 1 block to maximize blocks
+    int threads_per_block = num_segments;
+    int blocks = 1;
 
     encode_segment_kernel<<<blocks,threads_per_block>>>(
         d_pixels, d_output_segments, d_segment_sizes,
