@@ -52,7 +52,7 @@ __global__ void encode_segment_kernel(
     int num_segments
 ) {
 
-    int segment_idx = blockIdx.x;
+    int segment_idx = blockIdx.x +  blockIdx.x * threadIdx.x;
 
     // We're declaring a shared memory array of 64 pixels. 
     // We need this to be shared since shared memory is visible 
@@ -188,7 +188,7 @@ __global__ void decode_segment_kernel(
     int chuncks_len
 ) {
 
-    int cp_idx = blockIdx.x;
+    int cp_idx = blockIdx.x +  blockIdx.x * threadIdx.x;
     qoi_checkpoint_t checkpoint = d_checkpoints[cp_idx];
     int next_px_pos = d_next_px_pos[cp_idx];
 
@@ -269,7 +269,7 @@ std::vector<uint8_t> CUDAQOI::encode(const std::vector<uint8_t>& pixels,
 
 	int num_segments =
 		(total_px * PIXEL_TO_ENCODE_RATIO) / this->CHECKPOINT_INTERVAL + 1;
-	int checks_per_seg = this->CHECKPOINTS_PER_SEGMENT;
+	// int checks_per_seg = this->CHECKPOINTS_PER_SEGMENT;
 	int seg_px = total_px / num_segments;
 
     std::vector<qoi_checkpoint_t> checkpoints(num_segments);
@@ -285,8 +285,8 @@ std::vector<uint8_t> CUDAQOI::encode(const std::vector<uint8_t>& pixels,
     CUDA_CHECK(cudaMalloc(&d_output_segments, total_output_size));
     CUDA_CHECK(cudaMalloc(&d_segment_sizes, num_segments * sizeof(int32_t)));
     CUDA_CHECK(cudaMemcpy(d_pixels, pixels.data(), pixel_bytes, cudaMemcpyHostToDevice));
-    int threads_per_block = 1;
-    int blocks = num_segments;
+    int threads_per_block = num_segments;
+    int blocks = 1;
 
     encode_segment_kernel<<<blocks,threads_per_block>>>(
         d_pixels, d_output_segments, d_segment_sizes,
@@ -437,8 +437,8 @@ std::vector<uint8_t> CUDAQOI::decode(
     CUDA_CHECK(cudaMemcpy(d_checkpoints, h_checkpoints.data(), num_checkpoints * sizeof(qoi_checkpoint_t), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_next_px_pos, h_next_px_pos.data(), num_checkpoints * sizeof(int), cudaMemcpyHostToDevice));
     int chuncks_len = encoded_data.size() - sizeof(qoi_padding);
-    int threads_per_block = 1;
-    int blocks = num_checkpoints;
+    int threads_per_block = num_checkpoints;
+    int blocks = 1;
 
     decode_segment_kernel <<<blocks, threads_per_block>>>(
         d_encoded, d_pixels, d_checkpoints, d_next_px_pos, channels, chuncks_len
