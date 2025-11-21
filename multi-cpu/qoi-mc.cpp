@@ -25,10 +25,10 @@ typedef union {
 
 static const uint8_t qoi_padding[8] = {0, 0, 0, 0, 0, 0, 0, 1};
 
+template <int CHANNELS>
 static void encode_segment(std::vector<uint8_t>& bytes,
-						   const uint8_t* pixels,
-						   uint32_t channels,
-						   uint32_t num_px) {
+						   const uint8_t* __restrict pixels,
+						   uint32_t num_px_raw) {
 	qoi_rgba_t index[64];
 	memset(index, INVALID_PIXEL, sizeof(index));
 	qoi_rgba_t px_prev = {.v = INVALID_PIXEL};
@@ -36,16 +36,16 @@ static void encode_segment(std::vector<uint8_t>& bytes,
 	int run = 0;
 
 	// Assume worst case, so we don't need to resize
-	bytes.reserve(num_px * (channels + 1));
+	bytes.reserve(num_px_raw);
 
-	for (size_t px_pos = 0; px_pos < num_px * channels; px_pos += channels) {
+	for (size_t px_pos = 0; px_pos < num_px_raw; px_pos += CHANNELS) {
 		// loads current pixel RGB
 		px.rgba.r = pixels[px_pos + 0];
 		px.rgba.g = pixels[px_pos + 1];
 		px.rgba.b = pixels[px_pos + 2];
 
 		// loads alpha of current pixel if exists
-		if (channels == 4) {
+		if constexpr (CHANNELS == 4) {
 			px.rgba.a = pixels[px_pos + 3];
 		}
 
@@ -80,7 +80,7 @@ static void encode_segment(std::vector<uint8_t>& bytes,
 				// checkpoint), we must write this pixel absolutely
 				// (RGB/RGBA).
 				if (px_prev.v == INVALID_PIXEL) {
-					if (channels == 4) {
+					if constexpr (CHANNELS == 4) {
 						bytes.push_back(QOI_OP_RGBA);
 					} else {
 						bytes.push_back(QOI_OP_RGB);
@@ -89,7 +89,7 @@ static void encode_segment(std::vector<uint8_t>& bytes,
 					bytes.push_back(px.rgba.r);
 					bytes.push_back(px.rgba.g);
 					bytes.push_back(px.rgba.b);
-					if (channels == 4) {
+					if constexpr (CHANNELS == 4) {
 						bytes.push_back(px.rgba.a);
 					}
 				} else {
@@ -136,10 +136,10 @@ static void encode_segment(std::vector<uint8_t>& bytes,
 	}
 }
 
-static void decode_segment(uint8_t* pixels,
+template <int CHANNELS>
+static void decode_segment(uint8_t* __restrict pixels,
 						   const uint8_t* bytes,
-						   uint32_t channels,
-						   int next_px_pos) {
+						   uint32_t num_px_raw) {
 	qoi_rgba_t index[64];
 	qoi_rgba_t px;
 	int run = 0;
@@ -148,7 +148,7 @@ static void decode_segment(uint8_t* pixels,
 	memset(index, 0, sizeof(index));
 	px.v = 0xFF'00'00'00;  // Full alpha black
 
-	for (int px_pos = 0; px_pos < next_px_pos; px_pos += channels) {
+	for (uint32_t px_pos = 0; px_pos < num_px_raw; px_pos += CHANNELS) {
 		if (run > 0) {
 			run--;
 		} else {
@@ -186,7 +186,7 @@ static void decode_segment(uint8_t* pixels,
 		pixels[px_pos + 1] = px.rgba.g;
 		pixels[px_pos + 2] = px.rgba.b;
 
-		if (channels == 4) {
+		if constexpr (CHANNELS == 4) {
 			pixels[px_pos + 3] = px.rgba.a;
 		}
 	}
@@ -220,13 +220,18 @@ std::vector<uint8_t> MultiCPUQOI::encode(const std::vector<uint8_t>& pixels,
 								   ? total_px * channels
 								   : start_px + seg_px * channels;
 			// 0 Byte offset since we don't know it yet
-			checkpoints[s + j] = {
-				.fields = {0,
-						   static_cast<int32_t>((s + j) * seg_px * channels)}};
+			checkpoints[s + j].fields.byte_offset = 0;
+			checkpoints[s + j].fields.px_pos =
+				static_cast<int32_t>((s + j) * seg_px * channels);
 
 			// Encode slice
-			encode_segment(vecs[s + j], &pixels[start_px], channels,
-						   (end_px - start_px) / channels);
+			if (channels == 4) {
+				encode_segment<4>(vecs[s + j], &pixels[start_px],
+								  end_px - start_px);
+			} else {
+				encode_segment<3>(vecs[s + j], &pixels[start_px],
+								  end_px - start_px);
+			}
 		}
 	}
 
@@ -358,9 +363,14 @@ std::vector<uint8_t> MultiCPUQOI::decode(
 
 #pragma omp parallel for schedule(dynamic)
 	for (auto cp : checkpoints) {
-		decode_segment(&pixels[cp.fields.px_pos],
-					   &encoded_data[cp.fields.byte_offset], channels,
-					   cp.fields.next_px_pos - cp.fields.px_pos);
+		if (channels == 3)
+			decode_segment<3>(&pixels[cp.fields.px_pos],
+							  &encoded_data[cp.fields.byte_offset],
+							  cp.fields.next_px_pos - cp.fields.px_pos);
+		else
+			decode_segment<4>(&pixels[cp.fields.px_pos],
+							  &encoded_data[cp.fields.byte_offset],
+							  cp.fields.next_px_pos - cp.fields.px_pos);
 	}
 
 	return pixels;
