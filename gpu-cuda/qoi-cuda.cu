@@ -52,12 +52,12 @@ __global__ void encode_segment_kernel(
     int num_segments
 ) {
 
-    int segment_idx = blockIdx.x +  blockIdx.x * threadIdx.x;
+    int segment_idx = threadIdx.x +  blockIdx.x * threadIdx.x;
 
     // We're declaring a shared memory array of 64 pixels. 
     // We need this to be shared since shared memory is visible 
     // to all threads in a block and faster than global memory
-    __shared__ qoi_rgba_t index[64];
+    qoi_rgba_t index[64];
     // We're initializing all 64 caches slots to INVALID_PIXEL
     for(int i = 0; i < 64; i++) {
         index[i].v = INVALID_PIXEL;
@@ -188,12 +188,12 @@ __global__ void decode_segment_kernel(
     int chuncks_len
 ) {
 
-    int cp_idx = blockIdx.x +  blockIdx.x * threadIdx.x;
+    int cp_idx = threadIdx.x +  blockIdx.x * threadIdx.x;
     qoi_checkpoint_t checkpoint = d_checkpoints[cp_idx];
     int next_px_pos = d_next_px_pos[cp_idx];
 
     // Initalize per checkpoint state
-    __shared__ qoi_rgba_t index[64];
+    qoi_rgba_t index[64];
     for(int i = 0; i < 64; i++) {
         index[i].v = 0;
     }
