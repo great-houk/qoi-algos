@@ -52,11 +52,12 @@ __global__ void encode_segment_kernel(
     int num_segments
 ) {
 
-    int segment_idx = threadIdx.x +  blockIdx.x * threadIdx.x;
+    int segment_idx = threadIdx.x +  blockIdx.x * blockDim.x;
 
-    // We're declaring a shared memory array of 64 pixels. 
-    // We need this to be shared since shared memory is visible 
-    // to all threads in a block and faster than global memory
+    if (segment_idx >= num_segments) {
+        return;
+    }
+
     qoi_rgba_t index[64];
     // We're initializing all 64 caches slots to INVALID_PIXEL
     for(int i = 0; i < 64; i++) {
@@ -185,10 +186,16 @@ __global__ void decode_segment_kernel(
     const qoi_checkpoint_t* d_checkpoints,
     const int* d_next_px_pos,
     int channels,
-    int chuncks_len
+    int chuncks_len,
+    int num_checkpoints
 ) {
 
-    int cp_idx = threadIdx.x +  blockIdx.x * threadIdx.x;
+    int cp_idx =  threadIdx.x +  blockIdx.x * blockDim.x;
+
+    if (cp_idx >= num_checkpoints) {
+        return;
+    }
+
     qoi_checkpoint_t checkpoint = d_checkpoints[cp_idx];
     int next_px_pos = d_next_px_pos[cp_idx];
 
@@ -285,8 +292,9 @@ std::vector<uint8_t> CUDAQOI::encode(const std::vector<uint8_t>& pixels,
     CUDA_CHECK(cudaMalloc(&d_output_segments, total_output_size));
     CUDA_CHECK(cudaMalloc(&d_segment_sizes, num_segments * sizeof(int32_t)));
     CUDA_CHECK(cudaMemcpy(d_pixels, pixels.data(), pixel_bytes, cudaMemcpyHostToDevice));
-    int threads_per_block = num_segments;
-    int blocks = 1;
+    int threads_per_block = 128; //TODO come up with define
+    int blocks = (num_segments + threads_per_block -1)/threads_per_block;
+
 
     encode_segment_kernel<<<blocks,threads_per_block>>>(
         d_pixels, d_output_segments, d_segment_sizes,
@@ -437,11 +445,12 @@ std::vector<uint8_t> CUDAQOI::decode(
     CUDA_CHECK(cudaMemcpy(d_checkpoints, h_checkpoints.data(), num_checkpoints * sizeof(qoi_checkpoint_t), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_next_px_pos, h_next_px_pos.data(), num_checkpoints * sizeof(int), cudaMemcpyHostToDevice));
     int chuncks_len = encoded_data.size() - sizeof(qoi_padding);
-    int threads_per_block = num_checkpoints;
-    int blocks = 1;
+    int threads_per_block = 128; //TODO come up with define
+    int blocks = (num_checkpoints + threads_per_block -1)/threads_per_block;
+
 
     decode_segment_kernel <<<blocks, threads_per_block>>>(
-        d_encoded, d_pixels, d_checkpoints, d_next_px_pos, channels, chuncks_len
+        d_encoded, d_pixels, d_checkpoints, d_next_px_pos, channels, chuncks_len, num_checkpoints
     );
 
     CUDA_CHECK(cudaDeviceSynchronize());
