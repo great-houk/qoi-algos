@@ -5,7 +5,7 @@
 using namespace cv;
 
 int main(){
-    int frame_to_stitch = 30;
+    int frame_to_stitch = 80;
     double fps = 30.0;
     Mat frame0 = imread("imagesVideo/frame_0.png");
     Size frame_size(frame0.cols, frame0.rows);

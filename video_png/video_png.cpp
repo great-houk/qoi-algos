@@ -14,8 +14,8 @@ int main(int, char **) {
     Mat frame;
     
     double fps;
-    int time = 10;
-    int frames_to_process = 30;
+    int time = 0;
+    int frames_to_process = 80;
 
     for (const auto &entry : fs::directory_iterator(path)) {
         fs::remove(entry.path());

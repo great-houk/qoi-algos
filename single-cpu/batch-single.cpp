@@ -1,5 +1,6 @@
 #include "../reference/qoi-reference.hpp"
 #include "qoi-mc.hpp"
+#include "qoi-sc.hpp"
 #include <filesystem>
 #include <iostream>
 #include <omp.h>
@@ -13,6 +14,7 @@ bool decode_qoi_to_raw(const fs::path &in_path,
                        QOIDecoderSpec &spec_out);
 
 int main(int argc, char **argv) {
+
   if (argc < 2) {
     std::cerr << "Usage: " << argv[0] << " img1.qoi img2.qoi ...\n";
     return 1;
@@ -25,7 +27,10 @@ int main(int argc, char **argv) {
 
   const int num_images = static_cast<int>(input_paths.size());
 
-#pragma omp parallel for schedule(dynamic)
+  int outer_threads = omp_get_max_threads();
+  double t_start = omp_get_wtime();
+
+#pragma omp parallel for num_threads(outer_threads) schedule(dynamic)
   for (int i = 0; i < num_images; i++) {
     fs::path image_path = input_paths[i];
     std::vector<uint8_t> decoded_pixels;
@@ -35,21 +40,30 @@ int main(int argc, char **argv) {
       // decode failed → just skip this image
       continue;
     }
+    QOIEncoderSpec enc_spec{};
+    enc_spec.width = spec.width;
+    enc_spec.height = spec.height;
+    enc_spec.channels = spec.channels;
+    enc_spec.colorspace = spec.colorspace;
 
-    encode(decoded_pixels, spec);
+    SingleCPUQOI encoder;
+    std::vector<uint8_t> encoded = encoder.encode(decoded_pixels, enc_spec);
+
+    QOIDecoderSpec mc_dec_spec{};
+    std::vector<uint8_t> decoded_back = encoder.decode(encoded, mc_dec_spec);
+
     // Output some info in case of debugging
-   #pragma omp critical
+#pragma omp critical
     {
-      std::cout << "Thread " << omp_get_thread_num()
-                << " decoded " << image_path
-                << " (" << spec.width << "x" << spec.height
+      std::cout << "Thread " << omp_get_thread_num() << " decoded "
+                << image_path << " (" << spec.width << "x" << spec.height
                 << ", channels=" << int(spec.channels) << ")\n";
     }
-
-
-    
-
   }
+
+  double t_end = omp_get_wtime();
+  std::cout << "Processed " << num_images << " images in " << (t_end - t_start)
+            << " seconds (total)\n";
 
   return 0;
 }

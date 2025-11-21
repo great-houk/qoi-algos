@@ -1,8 +1,11 @@
 #include "../reference/qoi-reference.hpp"
+#include "../qoi.hpp"
 #include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
+#include <filesystem>
+
 
 namespace fs = std::filesystem;
 
