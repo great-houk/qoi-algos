@@ -16,7 +16,7 @@
 #include "reference/stb_image.hpp"
 #include "single-cpu/qoi-sc.hpp"
 #include "multi-cpu/qoi-mc.hpp"
-
+#include "gpu-cuda/qoi-cuda.hpp"
 #include "stb/stb_image_write.h"
 
 struct Implementation {
@@ -45,6 +45,7 @@ int main(int argc, char** argv) {
 		{"Reference", new ReferenceQOI(), new ReferenceQOI()},
 		{"Single Threaded", new SingleCPUQOI(), new SingleCPUQOI()},
 		{"Multi Threaded", new MultiCPUQOI(), new MultiCPUQOI()},
+		{"GPU (CUDA)", new CUDAQOI(), new CUDAQOI()},
 		// {"Libpng", new Libpng(), new Libpng()},
 		// {"StbImage", new StbImage(), new StbImage()},
 		// Comment to force formatting
