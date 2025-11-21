@@ -1,5 +1,5 @@
 #include "../reference/qoi-reference.hpp"
-#include "qoi-mc.hpp"
+#include "qoi-sc.cpp"
 #include "qoi-sc.hpp"
 #include <filesystem>
 #include <iostream>
