@@ -41,6 +41,25 @@ typedef union {
 
 static const uint8_t qoi_padding[8] = {0, 0, 0, 0, 0, 0, 0, 1};
 
+__global__ void encode_segment_kernel_parallel(
+    const uint8_t* pixels,
+    uint8_t* d_output_segments,
+    int32_t* d_segment_sizes,
+    int channels,
+    int total_px,
+    int max_segment_size,
+    int seg_px,
+    int num_segments
+) {
+    int segment_idx = blockIdx.x;
+    int threadIdx = threadIdx.x;
+    int threads_per_block = blockDim.x;
+    extern __shared__ uint8_t shared_mem[];
+    uint8_t* shared_output = shared_mem;
+    qoi_rgba_t* index = (qoi_rgba_t*)(shared_mem+ max_segment_size);
+    int* thread_output_sizes = (int*)(index+64);
+}
+
 __global__ void encode_segment_kernel(
     const uint8_t* pixels,
     uint8_t* d_output_segments,
