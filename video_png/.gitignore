@@ -1,0 +1,9 @@
+# Images
+*.png
+
+
+# Videos
+*.mp4
+
+#files
+imagesVideo/

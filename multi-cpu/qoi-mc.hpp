@@ -8,7 +8,7 @@ class MultiCPUQOI : public IEncoder, public IDecoder {
 	int CHECKPOINTS_PER_SEGMENT;
 
    public:
-	MultiCPUQOI(int checkpoint_interval = (1 << 20),
+	MultiCPUQOI(int checkpoint_interval = MIN_CHECKPOINT_INTERVAL,
 				int checkpoints_per_segment = 4) {
 		CHECKPOINT_INTERVAL = checkpoint_interval;
 		CHECKPOINTS_PER_SEGMENT = checkpoints_per_segment;
