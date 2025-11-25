@@ -69,13 +69,7 @@ int main(int argc, char **argv) {
     QOIDecoderSpec mc_dec_spec{};
     std::vector<uint8_t> decoded_back = encoder.decode(encoded, mc_dec_spec);
 
-    // Output some info in case of debugging
-#pragma omp critical
-    {
-      std::cout << "Thread " << omp_get_thread_num() << " decoded "
-                << image_path << " (" << spec.width << "x" << spec.height
-                << ", channels=" << int(spec.channels) << ")\n";
-    }
+
   }
   double t_end = omp_get_wtime();
   std::cout << "Processed " << num_images << " images in " << (t_end - t_start)
