@@ -45,7 +45,7 @@ int main(int argc, char** argv) {
 		// {"Reference", new ReferenceQOI(), new ReferenceQOI()},
 		// {"Single Threaded", new SingleCPUQOI(), new SingleCPUQOI()},
 		{"Multi Threaded", new MultiCPUQOI(), new MultiCPUQOI()},
-		{"GPU (CUDA)", new CUDAQOI(), new CUDAQOI()},
+		{"GPU (CUDA)", new GPUQOI(), new GPUQOI()},
 		// {"Libpng", new Libpng(), new Libpng()},
 		// {"StbImage", new StbImage(), new StbImage()},
 		// Comment to force formatting
