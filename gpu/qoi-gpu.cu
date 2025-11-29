@@ -1,4 +1,4 @@
-#include "qoi-mc.hpp"
+#include "qoi-gpu.hpp"
 #include <algorithm>
 #include <cstddef>
 #include <cstdlib>
@@ -22,6 +22,17 @@ typedef union {
 	} fields;
 	uint8_t v[8];
 } qoi_checkpoint_t;
+
+	typedef union {
+		struct {
+			int32_t byte_offset;
+			int32_t px_pos;
+			int32_t next_px_pos;
+		} fields;
+		// Only 8, since next_byte_pos is not stored in file
+		char v[8];
+	} checkpoint_span_t;
+
 
 static const uint8_t qoi_padding[8] = {0, 0, 0, 0, 0, 0, 0, 1};
 
@@ -138,20 +149,19 @@ static void encode_segment(std::vector<uint8_t>& bytes,
 
 template <int CHANNELS>
 __global__ static void decode_segment(
-	uint8_t* pixels,
-	const uint8_t* bytes,
-	uint32_t size,
-	checkpoint_span_t* cps
+    uint8_t* pixels,
+    const uint8_t* bytes,
+    uint32_t size,
+    const checkpoint_span_t* cps
 ) {
-	int cp_idx = threadIdx.x + blockIdx.x * blockDim.x;
-	if(cp_idx >= size) return;
+    int cp_idx = threadIdx.x + blockIdx.x * blockDim.x;
+    if (cp_idx >= static_cast<int>(size)) return;
 
-	cp = cps[cp_idx];
+    const checkpoint_span_t* cp = &cps[cp_idx];
 
-	pixels = &pixels[cp.fields.px_pos],
-	bytes = &bytes[cp.fields.byte_offset],
-	uint32_t num_px_raw = cp.fields.next_px_pos - cp.fields.px_pos
-
+    pixels = &pixels[cp->fields.px_pos];
+    bytes  = &bytes[cp->fields.byte_offset];
+    uint32_t num_px_raw = cp->fields.next_px_pos - cp->fields.px_pos;
 
 
 
@@ -207,7 +217,7 @@ __global__ static void decode_segment(
 	}
 }
 
-std::vector<uint8_t> MultiCPUQOI::encode(
+std::vector<uint8_t> GPUQOI::encode(
 	const std::vector<uint8_t>& pixels,
 	QOIEncoderSpec& spec
 ) {
@@ -306,141 +316,146 @@ std::vector<uint8_t> MultiCPUQOI::encode(
 
 
 
-
-std::vector<uint8_t> MultiCPUQOI::decode(
-	const std::vector<uint8_t>& encoded_data,
-	QOIDecoderSpec& spec
+std::vector<uint8_t> GPUQOI::decode(
+    const std::vector<uint8_t>& encoded_data,
+    QOIDecoderSpec& spec
 ) {
-	// Read in header
-	if (encoded_data.size() < sizeof(QOIHeader) + sizeof(qoi_padding)) {
-		return {};
-	}
-	QOIHeader header;
-	std::memcpy(header.b, encoded_data.data(), sizeof(QOIHeader));
-	// Big Endian :(
-	uint32_t header_magic = __builtin_bswap32(header.fields.magic);
-	spec.width = __builtin_bswap32(header.fields.width);
-	spec.height = __builtin_bswap32(header.fields.height);
-	spec.channels = header.fields.channels;
-	spec.colorspace = header.fields.colorspace;
+    // Read in header
+    if (encoded_data.size() < sizeof(QOIHeader) + sizeof(qoi_padding)) {
+        return {};
+    }
 
-	if (spec.width == 0 || spec.height == 0 || spec.channels < 3 ||
-		spec.channels > 4 || spec.colorspace > 1 || header_magic != QOI_MAGIC ||
-		spec.height >= QOI_PIXELS_MAX / spec.width) {
-		return {};
-	}
+    QOIHeader header;
+    std::memcpy(header.b, encoded_data.data(), sizeof(QOIHeader));
+    // Big Endian :(
+    uint32_t header_magic = __builtin_bswap32(header.fields.magic);
+    spec.width = __builtin_bswap32(header.fields.width);
+    spec.height = __builtin_bswap32(header.fields.height);
+    spec.channels = header.fields.channels;
+    spec.colorspace = header.fields.colorspace;
 
-	int channels = spec.channels;
-	int px_len = spec.width * spec.height * channels;
-	int max_size = spec.width * spec.height * (spec.channels + 1) +
-				   sizeof(QOIHeader) + sizeof(qoi_padding);
+    if (spec.width == 0 || spec.height == 0 || spec.channels < 3 ||
+        spec.channels > 4 || spec.colorspace > 1 || header_magic != QOI_MAGIC ||
+        spec.height >= QOI_PIXELS_MAX / spec.width) {
+        return {};
+    }
 
-	// Read in checkpoints
-	typedef union {
-		struct {
-			int32_t byte_offset;
-			int32_t px_pos;
-			int32_t next_px_pos;
-		} fields;
-		// Only 8, since next_byte_pos is not stored in file
-		char v[8];
-	} checkpoint_span_t;
+    int channels = spec.channels;
+    int px_len = spec.width * spec.height * channels;
+    int max_size = spec.width * spec.height * (spec.channels + 1) +
+                   sizeof(QOIHeader) + sizeof(qoi_padding);
 
-	int max_num_checkpoints = (max_size / this->CHECKPOINT_INTERVAL) + 1;
-	std::vector<checkpoint_span_t> checkpoints;
-	checkpoints.reserve(max_num_checkpoints);
-	// Read backwards to check for double padding
-	bool found_double_padding = false;
-	int p_size = (int)sizeof(qoi_padding);
-	int c_size = (int)sizeof(qoi_checkpoint_t);
-	int last_cp_px_pos = px_len;
-	const uint8_t* cp_p = encoded_data.data() + encoded_data.size() - p_size;
-	for (int i = 0; i < max_num_checkpoints; i++) {
-		// Check if we found the second padding
-		if (std::memcmp(cp_p - p_size, qoi_padding, p_size) == 0) {
-			found_double_padding = true;
-			break;
-		}
-		// Read in checkpoint
-		checkpoint_span_t cp;
-		std::memcpy(cp.v, cp_p - c_size, c_size);
-		// We're reading backwards, so set next_px_pos from last read
-		cp.fields.next_px_pos = last_cp_px_pos;
-		last_cp_px_pos = cp.fields.px_pos;
-		checkpoints.push_back(cp);
-		// Move backwards to continue reading cps
-		cp_p -= c_size;
-	}
 
-	if (!found_double_padding) {
-		// No double padding found, reset to no checkpoints
-		checkpoints.clear();
-		checkpoints.push_back(
-			(checkpoint_span_t){.fields = {sizeof(QOIHeader), 0, px_len}});
-		cp_p = encoded_data.data() + encoded_data.size() - p_size;
-		std::cout << "WARNING: No checkpoints found in QOI data, decoding from "
-					 "beginning only."
-				  << std::endl;
-	}
+    int max_num_checkpoints = (max_size / this->CHECKPOINT_INTERVAL) + 1;
 
-	// Initialize stable state
-	std::vector<uint8_t> pixels(px_len);
-	
+    checkpoint_span_t* checkpoints_um = nullptr;
+    cudaMallocManaged(&checkpoints_um,
+                      max_num_checkpoints * sizeof(checkpoint_span_t));
 
-	//Changes to make into cuda
-	const int threadsPerBlock = 256;
-	const int blocksPerGrid = (checkpoints.size() + threadsPerBlock - 1)/threadsPerBlock;
+    int num_checkpoints = 0;
 
-	uint8_t* device_pixels;
-	uint8_t* device_encoded_data;
-	checkpoint_span_t* device_checkpoints;
-	
-	cudaMalloc((void**)&device_pixels, px_len * sizeof(uint8_t));
-	cudaMemset(device_pixels, 0, px_len * sizeof(uint8_t));
+    bool found_double_padding = false;
+    int p_size = static_cast<int>(sizeof(qoi_padding));
+    int c_size = static_cast<int>(sizeof(qoi_checkpoint_t));
+    int last_cp_px_pos = px_len;
 
-	cudaMalloc((void**)&device_encoded_data, encoded_data.size() * sizeof(uint8_t));
-	cudaMemcpy(
-		device_encoded_data,
-		encoded_data.data(),
-		encoded_data.size() * sizeof(uint8_t),
-		cudaMemcpyHostToDevice
+    const uint8_t* cp_p = encoded_data.data() + encoded_data.size() - p_size;
+    for (int i = 0; i < max_num_checkpoints; i++) {
+        // Check if we found the second padding
+        if (std::memcmp(cp_p - p_size, qoi_padding, p_size) == 0) {
+            found_double_padding = true;
+            break;
+        }
+
+        checkpoint_span_t cp;
+        std::memcpy(cp.v, cp_p - c_size, c_size);
+
+        cp.fields.next_px_pos = last_cp_px_pos;
+        last_cp_px_pos = cp.fields.px_pos;
+
+        checkpoints_um[num_checkpoints++] = cp;
+
+        cp_p -= c_size;
+    }
+
+    if (!found_double_padding) {
+        // No double padding found, reset to a single checkpoint
+        num_checkpoints = 1;
+        checkpoints_um[0] = (checkpoint_span_t){
+            .fields = {sizeof(QOIHeader), 0, static_cast<uint32_t>(px_len)}
+        };
+
+        cp_p = encoded_data.data() + encoded_data.size() - p_size;
+        std::cout << "WARNING: No checkpoints found in QOI data, decoding from "
+                     "beginning only."
+                  << std::endl;
+    }
+
+    std::vector<uint8_t> pixels(px_len);
+
+	//prefetching optimization that is useful cus its in unified memory
+	int device = 0;
+	cudaGetDevice(&device);
+
+	cudaMemLocation loc{};
+	loc.type = cudaMemLocationTypeDevice;
+	loc.id   = device;
+
+	cudaMemPrefetchAsync(
+		checkpoints_um,
+		num_checkpoints * sizeof(checkpoint_span_t),
+		loc,
+		0
 	);
-
-	cudaMalloc((void**) &device_checkpoints, checkpoints.size()*sizeof(checkpoint_span_t));
-	cudaMemcpy(
-		device_checkpoints,
-		checkpoints.data(),
-		checkpoints.size() * sizeof(checkpoint_span_t),
-		cudaMemcpyHostToDevice
-	);
+	cudaDeviceSynchronize();
 
 
 
-	if (channels == 3)
-		decode_segment<3><<<blocksPerGrid, threadsPerBlock>>>(
-			device_pixels,
-			device_encoded_data,
-			checkpoints.size(),
-			device_checkpoints
-		);
-	else
-		decode_segment<4><<<blocksPerGrid, threadsPerBlock>>>(
-			device_pixels,
-			device_encoded_data,
-			checkpoints.size(),
-			device_checkpoints
-		);
+    const int threadsPerBlock = 256;
+    const int blocksPerGrid =(num_checkpoints + threadsPerBlock - 1) / threadsPerBlock;
 
+    uint8_t* device_pixels = nullptr;
+    uint8_t* device_encoded_data = nullptr;
 
+    cudaMalloc((void**)&device_pixels, px_len * sizeof(uint8_t));
+    cudaMemset(device_pixels, 0, px_len * sizeof(uint8_t));
 
-	cudaMemcpy(
-		pixels.data(),      
-		device_pixels,      
-		px_len * sizeof(uint8_t),
-		cudaMemcpyDeviceToHost
-	);
+    cudaMalloc((void**)&device_encoded_data,
+               encoded_data.size() * sizeof(uint8_t));
+    cudaMemcpy(
+        device_encoded_data,
+        encoded_data.data(),
+        encoded_data.size() * sizeof(uint8_t),
+        cudaMemcpyHostToDevice
+    );
 
+    if (channels == 3) {
+        decode_segment<3><<<blocksPerGrid, threadsPerBlock>>>(
+            device_pixels,
+            device_encoded_data,
+            static_cast<uint32_t>(num_checkpoints),
+            checkpoints_um
+        );
+    } else {
+        decode_segment<4><<<blocksPerGrid, threadsPerBlock>>>(
+            device_pixels,
+            device_encoded_data,
+            static_cast<uint32_t>(num_checkpoints),
+            checkpoints_um
+        );
+    }
 
+    cudaMemcpy(
+        pixels.data(),
+        device_pixels,
+        px_len * sizeof(uint8_t),
+        cudaMemcpyDeviceToHost
+    );
 
-	return pixels;
+    cudaFree(device_pixels);
+    cudaFree(device_encoded_data);
+    cudaFree(checkpoints_um);
+
+    return pixels;
 }
+

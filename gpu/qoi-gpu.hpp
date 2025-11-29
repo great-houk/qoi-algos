@@ -1,6 +1,6 @@
 #pragma once
 
-#include "qoi.hpp"
+#include "../qoi.hpp"
 
 class GPUQOI : public IEncoder, public IDecoder {
    private:
