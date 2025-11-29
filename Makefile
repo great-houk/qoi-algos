@@ -8,7 +8,7 @@ LDFLAGS  := -lstdc++ -lm -lpng
 CUDA_LDFLAGS := -L/usr/local/cuda/lib64 -lcudart
 TARGET   := bench
 
-SRCS := bench.cpp test_params.cpp convert.cpp reference/qoi-reference.cpp reference/libpng.cpp reference/stb_image.cpp single-cpu/qoi-sc.cpp multi-cpu/qoi-mc.cpp
+SRCS := bench.cpp test_params.cpp convert.cpp reference/qoi-reference.cpp reference/libpng.cpp reference/stb_image.cpp single-cpu/qoi-sc.cpp multi-cpu/qoi-mc.cpp gpu/qoi-gpu.cpp gpu/qoi-gpu.hpp
 CUDA_SRCS := gpu-cuda/qoi-cuda.cu
 OBJS := $(patsubst %.cpp, bin/%.o, $(SRCS))
 CUDA_OBJS := $(patsubst %.cu, bin/%.o, $(CUDA_SRCS))
