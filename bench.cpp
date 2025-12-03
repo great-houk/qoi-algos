@@ -44,8 +44,8 @@ int main(int argc, char** argv) {
 	std::vector<Implementation> implementations = {
 		// {"Reference", new ReferenceQOI(), new ReferenceQOI()},
 		// {"Single Threaded", new SingleCPUQOI(), new SingleCPUQOI()},
-		{"Multi Threaded", new MultiCPUQOI(), new MultiCPUQOI()},
-		// {"GPU (CUDA)", new GPUQOI(), new GPUQOI()},
+		// {"Multi Threaded", new MultiCPUQOI(), new MultiCPUQOI()},
+		{"GPU (CUDA)", new GPUQOI(), new GPUQOI()},
 		// {"Libpng", new Libpng(), new Libpng()},
 		// {"StbImage", new StbImage(), new StbImage()},
 		// Comment to force formatting
