@@ -55,7 +55,7 @@ std::vector<uint8_t> GPUQOI::encode(const std::vector<uint8_t>& pixels,
 		// Segment logic
 		if ((B & segment) == 0) {
 			memset(index, 0, sizeof(index));
-			px_prev = {.v = INVALID_PIXEL};
+			px_prev.v = INVALID_PIXEL;
 			last_seg_p = p;
 		}
 		int last_b = B;
@@ -243,98 +243,104 @@ std::vector<uint8_t> GPUQOI::encode(const std::vector<uint8_t>& pixels,
 
 
 
+
 template <int CHANNELS>
-__global__ static void decode_segment(
+__global__ void decode_segment(
     uint8_t* pixels,
     const uint8_t* bytes,
     size_t total_size,
-	size_t total_threads
+    size_t total_threads
 ) {
-	bool is_end_segment = false;
-
-
     int entry_idx = threadIdx.x + blockIdx.x * blockDim.x;
-	size_t start_byte = entry_idx * (segment + 1) // theres going to be an off by one error here
-	size_t end_byte = (entry_idx + 1) * (segment + 1) // theres going to be an off by one error here
+    if (entry_idx >= total_threads) return;
 
-	if(start_byte > total_size) return;
-	if(end_byte > total_size) {
-		end_byte = total_size - 1;
-	}
+    size_t start_byte = entry_idx * segment;
+    size_t end_byte   = start_byte + segment;
 
-	size_t num_bytes = end_byte - start_byte
+    if (start_byte >= total_size) return;
+    if (end_byte > total_size) end_byte = total_size;
+    
 
-    bytes = &bytes[start_byte];
-
-	std::vector<uint8_t> segment_pixels;
+    size_t num_bytes = end_byte - start_byte;
+    const uint8_t* segment_bytes = bytes + start_byte;
 
 
-	qoi_rgba_t index[64];
-	qoi_rgba_t px;
-	int run = 0;
-	int p = 0;
+	// printf("made it here : entry idx = %d\n", entry_idx);
 
-	memset(index, 0, sizeof(index));
-	px.v = 0xFF'00'00'00;  // Full alpha black
+    qoi_rgba_t index[64];
+    qoi_rgba_t px;
+    int run = 0;
+    size_t p = 0;
+    // thread_pixel_sizes[total_threads];
+    // thread_pixel_offsets[total_threads];
+	uint8_t segment_pixels[segment + 1];
 
-	while (p < num_bytes) {
-		if (run > 0) {
-			run--;
-		} else {
-			int b1 = bytes[p++];
+	uint32_t px_cnt; 
 
-			if (b1 == QOI_OP_RGB) {
-				px.rgba.r = bytes[p++];
-				px.rgba.g = bytes[p++];
-				px.rgba.b = bytes[p++];
-			} else if (b1 == QOI_OP_RGBA) {
-				px.rgba.r = bytes[p++];
-				px.rgba.g = bytes[p++];
-				px.rgba.b = bytes[p++];
-				px.rgba.a = bytes[p++];
-			} else if ((b1 & QOI_MASK_2) == QOI_OP_INDEX) {
-				px = index[b1];
-			} else if ((b1 & QOI_MASK_2) == QOI_OP_DIFF) {
-				px.rgba.r += ((b1 >> 4) & 0x03) - 2;
-				px.rgba.g += ((b1 >> 2) & 0x03) - 2;
-				px.rgba.b += (b1 & 0x03) - 2;
-			} else if ((b1 & QOI_MASK_2) == QOI_OP_LUMA) {
-				int b2 = bytes[p++];
-				int vg = (b1 & 0x3f) - 32;
-				px.rgba.r += vg - 8 + ((b2 >> 4) & 0x0f);
-				px.rgba.g += vg;
-				px.rgba.b += vg - 8 + (b2 & 0x0f);
-			} else if ((b1 & QOI_MASK_2) == QOI_OP_RUN) {
-				run = (b1 & 0x3f);
-			}
+    memset(index, 0, sizeof(index));
+    px.v = 0xFF000000u;
 
-			index[QOI_COLOR_HASH(px) & (64 - 1)] = px;
-		}
+    for (px_cnt = 0; p < num_bytes; px_cnt += CHANNELS) {
+        if (run > 0) {
+            run--;
+        } else {
+            int b1 = segment_bytes[p++];
+
+            if (b1 == QOI_OP_RGB) {
+                if (p + 2 >= num_bytes) break;
+                px.rgba.r = segment_bytes[p++];
+                px.rgba.g = segment_bytes[p++];
+                px.rgba.b = segment_bytes[p++];
+            } else if (b1 == QOI_OP_RGBA) {
+                if (p + 3 >= num_bytes) break;
+                px.rgba.r = segment_bytes[p++];
+                px.rgba.g = segment_bytes[p++];
+                px.rgba.b = segment_bytes[p++];
+                px.rgba.a = segment_bytes[p++];
+            } else if ((b1 & QOI_MASK_2) == QOI_OP_INDEX) {
+                px = index[b1];
+            } else if ((b1 & QOI_MASK_2) == QOI_OP_DIFF) {
+                px.rgba.r += ((b1 >> 4) & 0x03) - 2;
+                px.rgba.g += ((b1 >> 2) & 0x03) - 2;
+                px.rgba.b += (b1 & 0x03) - 2;
+            } else if ((b1 & QOI_MASK_2) == QOI_OP_LUMA) {
+                if (p >= num_bytes) break;
+                int b2 = segment_bytes[p++];
+                int vg = (b1 & 0x3f) - 32;
+                px.rgba.r += vg - 8 + ((b2 >> 4) & 0x0f);
+                px.rgba.g += vg;
+                px.rgba.b += vg - 8 + (b2 & 0x0f);
+            } else if ((b1 & QOI_MASK_2) == QOI_OP_RUN) {
+                run = (b1 & 0x3f);
+            }
+
+            index[QOI_COLOR_HASH(px) & 63] = px;
+        }
+
+        segment_pixels[px_cnt + 0] = px.rgba.r;
+        segment_pixels[px_cnt + 1] = px.rgba.g;
+        segment_pixels[px_cnt + 2] = px.rgba.b;
+        if constexpr (CHANNELS == 4) {
+            segment_pixels[px_cnt + 3] = px.rgba.a;
+        }
+    }
 
 
-		segment_pixels.push_back(px.rgba.r)
-		segment_pixels.push_back(px.rgba.g)
-		segment_pixels.push_back(px.rgba.b)
-
-		if constexpr (CHANNELS == 4) {
-			segment_pixels.push_back(px.rgba.a)
-		}
-	}
-
-
+		
 	int curr_px = 0;
 	for (unsigned int i = 0; i < total_threads; i++) {
 		if(entry_idx == i) {
-			for(unsigned int j = 0; j < segment_pixels.size(); j++) {
-				pixels[curr_px++] = segment_pixels[j]; 
+			for (unsigned int j = 0; j < px_cnt; j++) { 
+				pixels[curr_px++] = segment_pixels[j];
 			}
 		}
 		__syncthreads();
 	}
 
 
-
 }
+
+
 
 
 
@@ -350,7 +356,7 @@ std::vector<uint8_t> GPUQOI::decode(
     }
 
     QOIHeader header;
-    std::memcpy(header.b, encoded_data.data(), sizeof(QOIHeader));
+    memcpy(header.b, encoded_data.data(), sizeof(QOIHeader));
     // Big Endian :(
     uint32_t header_magic = __builtin_bswap32(header.fields.magic);
     spec.width = __builtin_bswap32(header.fields.width);
@@ -371,12 +377,9 @@ std::vector<uint8_t> GPUQOI::decode(
 
 
 
-    std::vector<uint8_t> pixels(px_len);
-
-
 	uint8_t* pixels = nullptr;
 	size_t px_bytes = px_len * sizeof(uint8_t);
-	cudaMallocmanaged(
+	cudaMallocManaged(
 		&pixels,
 		px_bytes
 	);
@@ -399,7 +402,7 @@ std::vector<uint8_t> GPUQOI::decode(
 
 
     const int threadsPerBlock = 32;
-	const int num_entry_points = (max_size + segments - 1) / segments;
+	const int num_entry_points = (max_size + segment - 1) / segment;
     const int blocksPerGrid = (num_entry_points + threadsPerBlock - 1) / threadsPerBlock;
 
     uint8_t* device_encoded_data = nullptr;
@@ -418,24 +421,32 @@ std::vector<uint8_t> GPUQOI::decode(
 
     if (channels == 3) {
         decode_segment<3><<<blocksPerGrid, threadsPerBlock>>>(
-            device_pixels,
+            pixels,
             device_encoded_data,
 			encoded_data_size,
 			(blocksPerGrid * threadsPerBlock)
 		);
     } else {
         decode_segment<4><<<blocksPerGrid, threadsPerBlock>>>(
-            device_pixels,
+            pixels,
             device_encoded_data,
 			encoded_data_size,
 			(blocksPerGrid * threadsPerBlock)
         );
     }
-	cudaMemPrefetchAsync(pixels, bytes, cudaCpuDeviceId, 0);
+
+	cudaMemPrefetchAsync(
+		pixels, 
+		px_bytes, 
+		loc,
+		0
+	);
 	cudaDeviceSynchronize(); 
 
     cudaFree(device_encoded_data);
 
-    return pixels;
+	std::vector<uint8_t> out_pixels(pixels, pixels + px_len);
+	cudaFree(pixels);
+	return out_pixels;
 }
 
