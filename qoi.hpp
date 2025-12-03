@@ -19,7 +19,7 @@
 #define QOI_PIXELS_MAX ((unsigned int)400000000)
 #define MIN_CHECKPOINT_INTERVAL (1 << 18)  // 256KB
 #define PIXEL_TO_ENCODE_RATIO 1.8	 // avg ratio of encoded size to pixels
-#define INVALID_PIXEL 0xFF'FF'FF'00	 // 0 alpha pure white
+#define INVALID_PIXEL 0x00'FF'FF'FF	 // 0 alpha pure white
 
 struct QOIDecoderSpec {
 	uint32_t width;
