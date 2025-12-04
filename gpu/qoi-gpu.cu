@@ -1,9 +1,6 @@
 #include <stdbool.h>
 #include <vector>
-#include <iostream>
-#include "vector.hpp"
-
-
+#include <stdio.h>
 #include "qoi-gpu.hpp"
 
 typedef union {
@@ -14,8 +11,22 @@ typedef union {
 } qoi_rgba_t;
 
 static const uint8_t qoi_padding[8] = {0, 0, 0, 0, 0, 0, 0, 1};
-#define segment_bit 12
-#define segment ((1 << segment_bit) - 1)
+static const size_t SEGMENT = 1 << 9;  // Must be a power of 2
+static const size_t SEGMENT_MASK = SEGMENT - 1;
+// Unfortunately, we have to account for the case where the segment is
+// entirely: RGB, (SEGMENT - 4) x RUN(62)
+// This is a lot of pixels, but dynamically doing it would be slower
+#define SEGMENT_PIXEL_AMOUNT (8 * SEGMENT)
+
+#define CHECK(stmt)                                                 \
+	{                                                               \
+		cudaError_t result = stmt;                                  \
+		if (result != cudaSuccess) {                                \
+			printf("Cuda error: %s\n", cudaGetErrorString(result)); \
+		}                                                           \
+	}
+
+static const size_t NUM_SHARED_INDEX = 24;
 
 std::vector<uint8_t> GPUQOI::encode(const std::vector<uint8_t>& pixels,
 									QOIEncoderSpec& spec) {
@@ -55,7 +66,7 @@ std::vector<uint8_t> GPUQOI::encode(const std::vector<uint8_t>& pixels,
 
 	while (p < pixels.size()) {
 		// Segment logic
-		if ((B & segment) == 0) {
+		if ((B & SEGMENT_MASK) == 0) {
 			memset(index, 0, sizeof(index));
 			px_prev.v = INVALID_PIXEL;
 			last_seg_p = p;
@@ -211,16 +222,16 @@ std::vector<uint8_t> GPUQOI::encode(const std::vector<uint8_t>& pixels,
 		px_prev = px;
 
 		// Segment logic
-		int runover = B & segment;
+		int runover = B & SEGMENT_MASK;
 		if (runover == 0 && attempted) {
 			attempted = false;
 		}
 
-		if (err_cnt == 0 && (last_b & segment) > runover && runover != 0) {
+		if (err_cnt == 0 && (last_b & SEGMENT_MASK) > runover && runover != 0) {
 			if (padding_needed == 0 && !attempted) {
 				p = last_seg_p;
-				padding_needed = segment - (last_b & segment) + 1;
-				data.resize(data.size() - runover - segment - 1);
+				padding_needed = SEGMENT - (last_b & SEGMENT_MASK);
+				data.resize(data.size() - runover - SEGMENT);
 				last_b = B;
 				attempted = true;
 			} else {
@@ -231,9 +242,9 @@ std::vector<uint8_t> GPUQOI::encode(const std::vector<uint8_t>& pixels,
 		}
 	}
 
-	// std::cout << "Errors: " << err_cnt << "\tSegments: " << (B / segment) + 1
-	// 		  << std::endl;
-
+	if (err_cnt != 0) {
+		printf("Errors: %i\tSegments: %i\n", err_cnt, (B / SEGMENT_MASK) + 1);
+	}
 
 	// Write footer
 	for (auto b : qoi_padding) {
@@ -243,243 +254,175 @@ std::vector<uint8_t> GPUQOI::encode(const std::vector<uint8_t>& pixels,
 	return data;
 }
 
+__global__ void decode_into_segment(uint8_t* bytes,
+									size_t data_size,
+									size_t* pixel_amounts,
+									qoi_rgba_t* seg_pixels_g,
+									size_t num_threads) {
+	int entry_idx = threadIdx.x + blockIdx.x * blockDim.x;
+	int stride = num_threads;
+	if (entry_idx >= num_threads || (entry_idx * SEGMENT) >= data_size)
+		return;
 
+	qoi_rgba_t* seg_pixels = &seg_pixels_g[entry_idx];
+	uint8_t* data = &bytes[entry_idx * SEGMENT];
+	size_t n_bytes = (entry_idx + 1) * SEGMENT < data_size
+						 ? SEGMENT
+						 : data_size - (entry_idx * SEGMENT);
 
+	size_t b = 0, p = 0;
+	uint8_t run = 0;
+	qoi_rgba_t px = {.v = 0xFF000000};
+	extern __shared__ qoi_rgba_t index_ss[];
+	qoi_rgba_t* index_s = &index_ss[NUM_SHARED_INDEX * threadIdx.x];
+	qoi_rgba_t index[64 - NUM_SHARED_INDEX];
 
-template <int CHANNELS>
-__global__ void decode_segment(
-    uint8_t* pixels,
-    uint8_t* bytes,
-    size_t total_size,
-	size_t total_threads,
-    uint8_t* thread_pixel_offsets
-) {
-    int entry_idx = threadIdx.x + blockIdx.x * blockDim.x;
-    if (entry_idx >= total_threads) return;
+	memset(index, 0, sizeof(index));
 
-    size_t start_byte = entry_idx * segment;
-    size_t end_byte   = start_byte + segment;
+	while (b < n_bytes) {
+		if (run == 0) {
+			uint8_t cmd = data[b++];
 
-    if (start_byte >= total_size) return;
-    if (end_byte > total_size) end_byte = total_size;
-    
-    size_t num_bytes = end_byte - start_byte;
+			if (cmd == QOI_OP_RGB || cmd == QOI_OP_RGBA) {
+				px.rgba.r = data[b++];
+				px.rgba.g = data[b++];
+				px.rgba.b = data[b++];
+				b += cmd == QOI_OP_RGBA;
+			} else if ((cmd & QOI_MASK_2) == QOI_OP_INDEX) {
+				if (cmd < NUM_SHARED_INDEX) {
+					px = index_s[cmd];
+				} else {
+					px = index[cmd - NUM_SHARED_INDEX];
+				}
+			} else if ((cmd & QOI_MASK_2) == QOI_OP_DIFF) {
+				px.rgba.r += ((cmd >> 4) & 0x03) - 2;
+				px.rgba.g += ((cmd >> 2) & 0x03) - 2;
+				px.rgba.b += (cmd & 0x03) - 2;
+			} else if ((cmd & QOI_MASK_2) == QOI_OP_LUMA) {
+				uint8_t b2 = data[b++];
+				uint8_t vg = (cmd & 0x3f) - 32;
+				px.rgba.r += vg - 8 + ((b2 >> 4) & 0x0f);
+				px.rgba.g += vg;
+				px.rgba.b += vg - 8 + (b2 & 0x0f);
+			} else if ((cmd & QOI_MASK_2) == QOI_OP_RUN) {
+				run = cmd & 0x3f;
+			}
 
-	// change back to just bytes readdreessing
-    const uint8_t* segment_bytes = bytes + start_byte;
-
-	
-	const size_t max_segment_bytes = (segment + 1) * 64;
-
-
-
-    qoi_rgba_t index[64];
-    qoi_rgba_t px;
-    int run = 0;
-    size_t p = 0;
-    
-
-	Vector<uint8_t, max_segment_bytes> segment_pxs;
-
-
-
-    memset(index, 0, sizeof(index));
-    px.v = 0xFF000000u;
-
-    while(p < num_bytes) {
-
-		// if (entry_idx == 1) {
-		// 	printf("px: %i\n", px_cnt);
-		// }
-        if (run > 0) {
-            run--;
-        } else {
-            int b1 = segment_bytes[p++];
-
-            if (b1 == QOI_OP_RGB) {
-                if (p + 2 >= num_bytes) break;
-                px.rgba.r = segment_bytes[p++];
-                px.rgba.g = segment_bytes[p++];
-                px.rgba.b = segment_bytes[p++];
-            } else if (b1 == QOI_OP_RGBA) {
-                if (p + 3 >= num_bytes) break;
-                px.rgba.r = segment_bytes[p++];
-                px.rgba.g = segment_bytes[p++];
-                px.rgba.b = segment_bytes[p++];
-                px.rgba.a = segment_bytes[p++];
-            } else if ((b1 & QOI_MASK_2) == QOI_OP_INDEX) {
-                px = index[b1];
-            } else if ((b1 & QOI_MASK_2) == QOI_OP_DIFF) {
-                px.rgba.r += ((b1 >> 4) & 0x03) - 2;
-                px.rgba.g += ((b1 >> 2) & 0x03) - 2;
-                px.rgba.b += (b1 & 0x03) - 2;
-            } else if ((b1 & QOI_MASK_2) == QOI_OP_LUMA) {
-                if (p >= num_bytes) break;
-                int b2 = segment_bytes[p++];
-                int vg = (b1 & 0x3f) - 32;
-                px.rgba.r += vg - 8 + ((b2 >> 4) & 0x0f);
-                px.rgba.g += vg;
-                px.rgba.b += vg - 8 + (b2 & 0x0f);
-            } else if ((b1 & QOI_MASK_2) == QOI_OP_RUN) {
-                run = (b1 & 0x3f);
-            }
-
-            index[QOI_COLOR_HASH(px) & 63] = px;
-        }
-
-        segment_pxs.push_back(px.rgba.r);
-        segment_pxs.push_back(px.rgba.g);
-        segment_pxs.push_back(px.rgba.b);
-        if constexpr (CHANNELS == 4) {
-            segment_pxs.push_back(px.rgba.a);
-        }
-    }
-
-
-	//Scan Hills  and Steele reduction thingy
-	int pout = 0, pin = 1;
-	thread_pixel_offsets[entry_idx] = segment_pxs.size();
-	__syncthreads();
-	for (int offset = 1; offset < total_threads; offset *= 2) {
-		pout = 1 - pout;
-		pin = 1 - pout;
-		if (entry_idx - offset >= 0) {
-			thread_pixel_offsets[pout * total_threads + entry_idx] = thread_pixel_offsets[pin * total_threads + entry_idx] + thread_pixel_offsets[pin * total_threads + entry_idx - offset];
+			uint8_t hash = QOI_COLOR_HASH(px) & (64 - 1);
+			if (hash < NUM_SHARED_INDEX) {
+				index_s[hash] = px;
+			} else {
+				index[hash - NUM_SHARED_INDEX] = px;
+			}
 		} else {
-			thread_pixel_offsets[pout * total_threads + entry_idx] = thread_pixel_offsets[pin * total_threads + entry_idx];
+			run--;
 		}
-		__syncthreads(); 
-	}
-	thread_pixel_offsets[entry_idx] = thread_pixel_offsets[pout * total_threads + entry_idx]; 
 
-	__syncthreads(); 
-
-	int px_offset = thread_pixel_offsets[entry_idx];
-	for(unsigned int i = 0; i < segment_pxs.size(); i++) {
-		pixels[px_offset + i] = segment_pxs[i];
+		seg_pixels[stride * p++] = px;
 	}
+
+	for (; run > 0; run--) {
+		seg_pixels[stride * p++] = px;
+	}
+
+	pixel_amounts[entry_idx] = p;
 }
 
-
-
-
-
-std::vector<uint8_t> GPUQOI::decode(
-    const std::vector<uint8_t>& encoded_data,
-    QOIDecoderSpec& spec
-) {
+std::vector<uint8_t> GPUQOI::decode(const std::vector<uint8_t>& encoded_data,
+									QOIDecoderSpec& spec) {
 	size_t encoded_data_size = encoded_data.size();
 
-    // Read in header
-    if (encoded_data_size < sizeof(QOIHeader) + sizeof(qoi_padding)) {
-        return {};
-    }
+	// Read in header
+	if (encoded_data_size < sizeof(QOIHeader) + sizeof(qoi_padding)) {
+		return {};
+	}
 
-    QOIHeader header;
-    memcpy(header.b, encoded_data.data(), sizeof(QOIHeader));
-    // Big Endian :(
-    uint32_t header_magic = __builtin_bswap32(header.fields.magic);
-    spec.width = __builtin_bswap32(header.fields.width);
-    spec.height = __builtin_bswap32(header.fields.height);
-    spec.channels = header.fields.channels;
-    spec.colorspace = header.fields.colorspace;
+	QOIHeader header;
+	memcpy(header.b, encoded_data.data(), sizeof(QOIHeader));
+	// Big Endian :(
+	uint32_t header_magic = __builtin_bswap32(header.fields.magic);
+	spec.width = __builtin_bswap32(header.fields.width);
+	spec.height = __builtin_bswap32(header.fields.height);
+	spec.channels = header.fields.channels;
+	spec.colorspace = header.fields.colorspace;
 
-    if (spec.width == 0 || spec.height == 0 || spec.channels < 3 ||
-        spec.channels > 4 || spec.colorspace > 1 || header_magic != QOI_MAGIC ||
-        spec.height >= QOI_PIXELS_MAX / spec.width) {
-        return {};
-    }
+	if (spec.width == 0 || spec.height == 0 || spec.channels < 3 ||
+		spec.channels > 4 || spec.colorspace > 1 || header_magic != QOI_MAGIC ||
+		spec.height >= QOI_PIXELS_MAX / spec.width) {
+		return {};
+	}
 
-    int channels = spec.channels;
-    int px_len = spec.width * spec.height * channels;
-    int max_size = spec.width * spec.height * (spec.channels + 1) +
-                   sizeof(QOIHeader) + sizeof(qoi_padding);
+	uint8_t CHANNELS = spec.channels;
+	size_t px_len = spec.width * spec.height * CHANNELS;
 
+	const uint8_t* data_start = encoded_data.data() + sizeof(QOIHeader);
+	// Assume there's no extra data, makes this incompatible with our other
+	// encoding methods
+	const size_t data_size =
+		encoded_data.size() - sizeof(QOIHeader) - sizeof(qoi_padding);
 
+	uint8_t* gpu_encoded_data;
+	CHECK(cudaMalloc(&gpu_encoded_data, data_size));
+	CHECK(cudaMemcpy(gpu_encoded_data, data_start, data_size,
+					 cudaMemcpyHostToDevice));
 
-	uint8_t* pixels = nullptr;
-	size_t px_bytes = px_len * sizeof(uint8_t);
-	cudaMallocManaged(
-		&pixels,
-		px_bytes
-	);
+	const int threadsPerBlock = 128;
+	const int numBlocks = (data_size + SEGMENT * threadsPerBlock - 1) /
+						  (SEGMENT * threadsPerBlock);
+	const int numThreads = threadsPerBlock * numBlocks;
 
-	int device = 0;
-	cudaGetDevice(&device);
+	size_t* gpu_pixel_amounts;
+	CHECK(cudaMalloc(&gpu_pixel_amounts, numThreads * sizeof(size_t)));
 
-	cudaMemLocation loc{};
-	loc.type = cudaMemLocationTypeDevice;
-	loc.id   = device;
+	qoi_rgba_t* gpu_seg_pixels;
+	CHECK(cudaMalloc(&gpu_seg_pixels,
+					 SEGMENT_PIXEL_AMOUNT * numThreads * sizeof(qoi_rgba_t)));
 
-	cudaMemPrefetchAsync(
-		pixels,
-		px_bytes,
-		loc,
-		0
-	);
-	cudaDeviceSynchronize();
+	decode_into_segment<<<numBlocks, threadsPerBlock,
+						  24 * threadsPerBlock * sizeof(qoi_rgba_t)>>>(
+		gpu_encoded_data, data_size, gpu_pixel_amounts, gpu_seg_pixels,
+		numThreads);
 
+	std::vector<qoi_rgba_t> seg_pixels;
+	seg_pixels.resize(SEGMENT_PIXEL_AMOUNT * numThreads);
+	CHECK(cudaMemcpy(seg_pixels.data(), gpu_seg_pixels,
+					 seg_pixels.size() * sizeof(qoi_rgba_t),
+					 cudaMemcpyDeviceToHost));
 
-    const int threadsPerBlock = 32;
-	const int num_entry_points = (max_size + segment - 1) / segment;
-    const int blocksPerGrid = (num_entry_points + threadsPerBlock - 1) / threadsPerBlock;
+	std::vector<size_t> pixel_amounts;
+	pixel_amounts.resize(numThreads);
+	CHECK(cudaMemcpy(pixel_amounts.data(), gpu_pixel_amounts,
+					 pixel_amounts.size() * sizeof(size_t),
+					 cudaMemcpyDeviceToHost));
 
-    uint8_t* device_encoded_data = nullptr;
-	size_t encoded_data_bytes = encoded_data_size * sizeof(uint8_t);
+	auto pixel_offsets = pixel_amounts;
+	pixel_offsets[0] = 0;
+	for (int i = 1; i < pixel_offsets.size(); i++) {
+		pixel_offsets[i] = pixel_offsets[i - 1] + pixel_amounts[i - 1];
+	}
 
-    cudaMalloc(
-		(void**)&device_encoded_data,
-		encoded_data_bytes
-	);
-    cudaMemcpy(
-        device_encoded_data,
-        encoded_data.data(),
-        encoded_data_bytes,
-        cudaMemcpyHostToDevice
-    );
+	cudaFree(gpu_encoded_data);
+	cudaFree(gpu_pixel_amounts);
+	cudaFree(gpu_seg_pixels);
 
-	size_t total_threads = (blocksPerGrid * threadsPerBlock);
+	std::vector<uint8_t> pixels;
+	pixels.resize(px_len);
 
-    uint8_t* device_thread_pixel_offsets = nullptr;
-	size_t thread_pixel_offsets_bytes = total_threads * sizeof(uint8_t);
+#pragma omp parallel for schedule(dynamic)
+	for (int t = 0; t < numThreads; t++) {
+		size_t p = pixel_offsets[t] * CHANNELS;
+		// size_t p = 0;
+		for (int i = 0; i < pixel_amounts[t]; i++) {
+			qoi_rgba_t px = seg_pixels[t + numThreads * i];
 
-	cudaMalloc(
-		(void**)&device_thread_pixel_offsets,
-		thread_pixel_offsets_bytes
-	);
+			pixels[p++] = px.rgba.r;
+			pixels[p++] = px.rgba.g;
+			pixels[p++] = px.rgba.b;
+			if (CHANNELS == 4) {
+				pixels[p++] = px.rgba.a;
+			}
+		}
+	}
 
-
-	if (channels == 3) {
-		decode_segment<3><<<blocksPerGrid, threadsPerBlock>>>(
-			pixels,
-			device_encoded_data,
-			encoded_data_size,
-			total_threads,
-			device_thread_pixel_offsets
-
-		);
-	} else {
-		decode_segment<4><<<blocksPerGrid, threadsPerBlock>>>(
-			pixels,
-			device_encoded_data,
-			encoded_data_size,
-			total_threads,
-			device_thread_pixel_offsets
-		);
-    }
-
-	cudaMemPrefetchAsync(
-		pixels, 
-		px_bytes, 
-		loc,
-		0
-	);
-	cudaDeviceSynchronize(); 
-
-    cudaFree(device_encoded_data);
-
-	std::vector<uint8_t> out_pixels(pixels, pixels + px_len);
-	cudaFree(pixels);
-	return out_pixels;
+	return pixels;
 }
-

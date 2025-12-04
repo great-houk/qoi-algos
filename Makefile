@@ -2,7 +2,7 @@ CXX      ?= g++
 NVCC     ?= nvcc
 
 CXXFLAGS := -std=c++2a -g -O3 -Wall -Wextra -I. -fopenmp
-NVCCFLAGS := -std=c++17 -g -O3 -I. --compiler-options -fPIC
+NVCCFLAGS := -std=c++17 -g -O3 -I. -gencode=arch=compute_75,code=sm_75 --compiler-options -fopenmp
 LDFLAGS  := -lstdc++ -lm -lpng
 
 CUDA_LDFLAGS := -L/usr/local/cuda/lib64 -lcudart
