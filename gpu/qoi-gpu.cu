@@ -26,7 +26,7 @@ static const size_t SEGMENT_MASK = SEGMENT - 1;
 		}                                                           \
 	}
 
-static const size_t NUM_SHARED_INDEX = 24;
+static const int threadsPerBlock = 128;
 
 std::vector<uint8_t> GPUQOI::encode(const std::vector<uint8_t>& pixels,
 									QOIEncoderSpec& spec) {
@@ -243,7 +243,7 @@ std::vector<uint8_t> GPUQOI::encode(const std::vector<uint8_t>& pixels,
 	}
 
 	if (err_cnt != 0) {
-		printf("Errors: %i\tSegments: %i\n", err_cnt, (B / SEGMENT_MASK) + 1);
+		printf("Errors: %i\tSegments: %lu\n", err_cnt, (B / SEGMENT_MASK) + 1);
 	}
 
 	// Write footer
@@ -258,10 +258,10 @@ __global__ void decode_into_segment(uint8_t* bytes,
 									size_t data_size,
 									size_t* pixel_amounts,
 									qoi_rgba_t* seg_pixels_g,
-									size_t num_threads) {
+									size_t num_segs) {
 	int entry_idx = threadIdx.x + blockIdx.x * blockDim.x;
-	int stride = num_threads;
-	if (entry_idx >= num_threads || (entry_idx * SEGMENT) >= data_size)
+	int stride = num_segs;
+	if (entry_idx >= num_segs || (entry_idx * SEGMENT) >= data_size)
 		return;
 
 	qoi_rgba_t* seg_pixels = &seg_pixels_g[entry_idx];
@@ -273,10 +273,7 @@ __global__ void decode_into_segment(uint8_t* bytes,
 	size_t b = 0, p = 0;
 	uint8_t run = 0;
 	qoi_rgba_t px = {.v = 0xFF000000};
-	extern __shared__ qoi_rgba_t index_ss[];
-	qoi_rgba_t* index_s = &index_ss[NUM_SHARED_INDEX * threadIdx.x];
-	qoi_rgba_t index[64 - NUM_SHARED_INDEX];
-
+	qoi_rgba_t index[64];
 	memset(index, 0, sizeof(index));
 
 	while (b < n_bytes) {
@@ -289,11 +286,7 @@ __global__ void decode_into_segment(uint8_t* bytes,
 				px.rgba.b = data[b++];
 				b += cmd == QOI_OP_RGBA;
 			} else if ((cmd & QOI_MASK_2) == QOI_OP_INDEX) {
-				if (cmd < NUM_SHARED_INDEX) {
-					px = index_s[cmd];
-				} else {
-					px = index[cmd - NUM_SHARED_INDEX];
-				}
+				px = index[cmd];
 			} else if ((cmd & QOI_MASK_2) == QOI_OP_DIFF) {
 				px.rgba.r += ((cmd >> 4) & 0x03) - 2;
 				px.rgba.g += ((cmd >> 2) & 0x03) - 2;
@@ -309,11 +302,7 @@ __global__ void decode_into_segment(uint8_t* bytes,
 			}
 
 			uint8_t hash = QOI_COLOR_HASH(px) & (64 - 1);
-			if (hash < NUM_SHARED_INDEX) {
-				index_s[hash] = px;
-			} else {
-				index[hash - NUM_SHARED_INDEX] = px;
-			}
+			index[hash] = px;
 		} else {
 			run--;
 		}
@@ -366,31 +355,28 @@ std::vector<uint8_t> GPUQOI::decode(const std::vector<uint8_t>& encoded_data,
 	CHECK(cudaMemcpy(gpu_encoded_data, data_start, data_size,
 					 cudaMemcpyHostToDevice));
 
-	const int threadsPerBlock = 128;
-	const int numBlocks = (data_size + SEGMENT * threadsPerBlock - 1) /
-						  (SEGMENT * threadsPerBlock);
-	const int numThreads = threadsPerBlock * numBlocks;
+	const int numSegments = (data_size + SEGMENT - 1) / SEGMENT;
+	const int numBlocks = (numSegments + threadsPerBlock - 1) / threadsPerBlock;
 
 	size_t* gpu_pixel_amounts;
-	CHECK(cudaMalloc(&gpu_pixel_amounts, numThreads * sizeof(size_t)));
+	CHECK(cudaMalloc(&gpu_pixel_amounts, numSegments * sizeof(size_t)));
 
 	qoi_rgba_t* gpu_seg_pixels;
 	CHECK(cudaMalloc(&gpu_seg_pixels,
-					 SEGMENT_PIXEL_AMOUNT * numThreads * sizeof(qoi_rgba_t)));
+					 SEGMENT_PIXEL_AMOUNT * numSegments * sizeof(qoi_rgba_t)));
 
-	decode_into_segment<<<numBlocks, threadsPerBlock,
-						  24 * threadsPerBlock * sizeof(qoi_rgba_t)>>>(
+	decode_into_segment<<<numBlocks, threadsPerBlock>>>(
 		gpu_encoded_data, data_size, gpu_pixel_amounts, gpu_seg_pixels,
-		numThreads);
+		numSegments);
 
 	std::vector<qoi_rgba_t> seg_pixels;
-	seg_pixels.resize(SEGMENT_PIXEL_AMOUNT * numThreads);
+	seg_pixels.resize(SEGMENT_PIXEL_AMOUNT * numSegments);
 	CHECK(cudaMemcpy(seg_pixels.data(), gpu_seg_pixels,
 					 seg_pixels.size() * sizeof(qoi_rgba_t),
 					 cudaMemcpyDeviceToHost));
 
 	std::vector<size_t> pixel_amounts;
-	pixel_amounts.resize(numThreads);
+	pixel_amounts.resize(numSegments);
 	CHECK(cudaMemcpy(pixel_amounts.data(), gpu_pixel_amounts,
 					 pixel_amounts.size() * sizeof(size_t),
 					 cudaMemcpyDeviceToHost));
@@ -409,11 +395,10 @@ std::vector<uint8_t> GPUQOI::decode(const std::vector<uint8_t>& encoded_data,
 	pixels.resize(px_len);
 
 #pragma omp parallel for schedule(dynamic)
-	for (int t = 0; t < numThreads; t++) {
+	for (int t = 0; t < numSegments; t++) {
 		size_t p = pixel_offsets[t] * CHANNELS;
-		// size_t p = 0;
 		for (int i = 0; i < pixel_amounts[t]; i++) {
-			qoi_rgba_t px = seg_pixels[t + numThreads * i];
+			qoi_rgba_t px = seg_pixels[t + numSegments * i];
 
 			pixels[p++] = px.rgba.r;
 			pixels[p++] = px.rgba.g;

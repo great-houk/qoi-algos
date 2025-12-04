@@ -19,4 +19,4 @@ fi
 
 # Build and run
 make
-./bin/bench 2 images
+./bin/bench 1 images_small
