@@ -1,5 +1,4 @@
 #include "../reference/qoi-reference.hpp"
-#include "qoi-sc.cpp"
 #include "qoi-sc.hpp"
 #include <filesystem>
 #include <iostream>
@@ -26,8 +25,10 @@ int main(int argc, char **argv) {
   }
 
   const int num_images = static_cast<int>(input_paths.size());
+  std::vector<double> sc_encode_times(num_images, 0.0);
+  std::vector<double> sc_decode_times(num_images, 0.0);
 
-  int outer_threads = omp_get_max_threads();
+  int outer_threads = 3;
   double t_start = omp_get_wtime();
 
 #pragma omp parallel for num_threads(outer_threads) schedule(dynamic)
@@ -47,23 +48,41 @@ int main(int argc, char **argv) {
     enc_spec.colorspace = spec.colorspace;
 
     SingleCPUQOI encoder;
+
+    double t_enc_start = omp_get_wtime();
     std::vector<uint8_t> encoded = encoder.encode(decoded_pixels, enc_spec);
+        double t_enc_end = omp_get_wtime();
+
+    sc_encode_times[i] = t_enc_end - t_enc_start;
 
     QOIDecoderSpec mc_dec_spec{};
+    double t_dec_start = omp_get_wtime();
     std::vector<uint8_t> decoded_back = encoder.decode(encoded, mc_dec_spec);
+     double t_dec_end = omp_get_wtime();
+
+    sc_decode_times[i] = t_dec_end - t_dec_start;
 
     // Output some info in case of debugging
-#pragma omp critical
-    {
-      std::cout << "Thread " << omp_get_thread_num() << " decoded "
-                << image_path << " (" << spec.width << "x" << spec.height
-                << ", channels=" << int(spec.channels) << ")\n";
-    }
+// #pragma omp critical
+//     {
+//       std::cout << "Thread " << omp_get_thread_num() << " decoded "
+//                 << image_path << " (" << spec.width << "x" << spec.height
+//                 << ", channels=" << int(spec.channels) << ")\n";
+//     }
   }
 
   double t_end = omp_get_wtime();
   std::cout << "Processed " << num_images << " images in " << (t_end - t_start)
             << " seconds (total)\n";
 
+for (int i = 0; i < num_images; ++i) {
+    std::string name = input_paths[i].filename().string();
+    std::cout << name
+              << "  encode=" << sc_encode_times[i]
+             << " s, decode=" << sc_decode_times[i]
+              << " s\n";
+  }
   return 0;
 }
+
+    
