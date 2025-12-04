@@ -149,6 +149,12 @@ int main(int argc, char** argv) {
 							.count() /
 						1000.0;
 					total_decode_time += decode_time;
+					if (decoded_data.empty()) {
+						verified = false;
+						printf("ERROR: Empty decoded data for %s using %s\n",
+							   image.path.c_str(), impl.name.c_str());
+						continue;
+					}
 					if (image.data != decoded_data) {
 						verified = false;
 						// Output error image
