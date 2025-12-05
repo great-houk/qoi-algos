@@ -251,7 +251,9 @@ __global__ void decode_into_segment(uint8_t* data_g,
 
 	size_t b = 0, b_s = 0, p = 0;
 	uint8_t run = 0;
-	qoi_rgba_t px = {.v = 0xFF000000};
+	qoi_rgba_t px = {.v = 0};
+	px.rgba.a = 0xFF;
+
 	qoi_rgba_t index[64];
 	memset(index, 0, sizeof(index));
 
