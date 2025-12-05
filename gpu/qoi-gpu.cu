@@ -399,6 +399,7 @@ std::vector<uint8_t> GPUQOI::decode(const std::vector<uint8_t>& encoded_data,
 
 	pixels.resize(px_len);
 
+	CHECK(cudaGetLastError());
 	CHECK(cudaDeviceSynchronize());
 
 	CHECK(
