@@ -11,10 +11,11 @@ typedef union {
 } qoi_rgba_t;
 
 static const uint8_t qoi_padding[8] = {0, 0, 0, 0, 0, 0, 0, 1};
-static const size_t SEGMENT = 1 << 9;  // Must be a power of 2
+static const size_t SEGMENT = 1 << 10;	// Must be a power of 2
 static const size_t SEGMENT_MASK = SEGMENT - 1;
 static const uint8_t SEGMENT_FOOTER[] = {'S', 'E', 'G', 'S'};
 static const int threadsPerBlock = 128;
+static const int sharedDataCacheSize = 1 << 6;
 
 #define CHECK(stmt)                                                 \
 	{                                                               \
@@ -52,7 +53,7 @@ std::vector<uint8_t> GPUQOI::encode(const std::vector<uint8_t>& pixels,
 	int padding_needed = 0;
 	int last_seg_p = 0;
 	auto B = [&] { return data.size() - sizeof(QOIHeader); };
-	std::vector<uint32_t> segment_offsets;
+	std::vector<uint16_t> segment_offsets;
 	segment_offsets.reserve((data.size() + SEGMENT - 1) / SEGMENT);
 
 	int err_cnt = 0;
@@ -212,7 +213,7 @@ std::vector<uint8_t> GPUQOI::encode(const std::vector<uint8_t>& pixels,
 	// Write segment offsets
 	for (int i = 1; i < segment_offsets.size(); i++) {
 		uint8_t* bytes = (uint8_t*)&segment_offsets[i];
-		for (int j = 0; j < 4; j++) {
+		for (int j = 0; j < 2; j++) {
 			data.push_back(bytes[j]);
 		}
 	}
@@ -248,31 +249,67 @@ __global__ void decode_into_segment(uint8_t* data_g,
 						 ? SEGMENT
 						 : data_size - (entry_idx * SEGMENT);
 
-	size_t b = 0, p = 0;
+	size_t b = 0, b_s = 0, p = 0, p_s = 0;
 	uint8_t run = 0;
 	qoi_rgba_t px = {.v = 0xFF000000};
-	uint8_t index[64 * 3];
+	qoi_rgba_t index[64];
 	memset(index, 0, sizeof(index));
 
+	__shared__ uint8_t data_s[threadsPerBlock * sharedDataCacheSize];
+	auto cache_data = [&] {
+		auto num = b + sharedDataCacheSize >= n_bytes ? n_bytes - b
+													  : sharedDataCacheSize;
+		memcpy(&data_s[threadIdx.x * sharedDataCacheSize], &data[b], num);
+	};
+	cache_data();
+
+	auto get_data = [&] {
+		b++, b_s++;
+		return data_s[(b_s - 1) + threadIdx.x * sharedDataCacheSize];
+	};
+
+	__shared__ uint8_t pixels_s[threadsPerBlock * sharedDataCacheSize];
+	auto flush_pixel_cache = [&] {
+		memcpy(&pixels[p], &pixels_s[threadIdx.x * sharedDataCacheSize], p_s);
+		p += p_s;
+		p_s = 0;
+	};
+
+	auto write_pixel = [&](auto px) {
+		if (p_s >= sharedDataCacheSize) {
+			flush_pixel_cache();
+		}
+		pixels_s[threadIdx.x * sharedDataCacheSize + p_s++] = px.rgba.r;
+		pixels_s[threadIdx.x * sharedDataCacheSize + p_s++] = px.rgba.g;
+		pixels_s[threadIdx.x * sharedDataCacheSize + p_s++] = px.rgba.b;
+		if constexpr (CHANNELS == 4) {
+			pixels_s[threadIdx.x * sharedDataCacheSize + p_s++] = px.rgba.a;
+		}
+	};
+
 	while (b < n_bytes) {
+		if (b_s >= sharedDataCacheSize - 4) {
+			b_s = 0;
+			cache_data();
+		}
+
 		if (run == 0) {
-			uint8_t cmd = data[b++];
+			uint8_t cmd = get_data();
 
 			if (cmd == QOI_OP_RGB || cmd == QOI_OP_RGBA) {
-				px.rgba.r = data[b++];
-				px.rgba.g = data[b++];
-				px.rgba.b = data[b++];
+				px.rgba.r = get_data();
+				px.rgba.g = get_data();
+				px.rgba.b = get_data();
 				b += cmd == QOI_OP_RGBA;
+				b_s += cmd == QOI_OP_RGBA;
 			} else if ((cmd & QOI_MASK_2) == QOI_OP_INDEX) {
-				px.rgba.r = index[cmd * 3 + 0];
-				px.rgba.g = index[cmd * 3 + 1];
-				px.rgba.b = index[cmd * 3 + 2];
+				px = index[cmd];
 			} else if ((cmd & QOI_MASK_2) == QOI_OP_DIFF) {
 				px.rgba.r += ((cmd >> 4) & 0x03) - 2;
 				px.rgba.g += ((cmd >> 2) & 0x03) - 2;
 				px.rgba.b += (cmd & 0x03) - 2;
 			} else if ((cmd & QOI_MASK_2) == QOI_OP_LUMA) {
-				uint8_t b2 = data[b++];
+				uint8_t b2 = get_data();
 				uint8_t vg = (cmd & 0x3f) - 32;
 				px.rgba.r += vg - 8 + ((b2 >> 4) & 0x0f);
 				px.rgba.g += vg;
@@ -284,29 +321,18 @@ __global__ void decode_into_segment(uint8_t* data_g,
 			uint8_t hash =
 				(px.rgba.r * 3 + px.rgba.g * 5 + px.rgba.b * 7 + 245) &
 				(64 - 1);
-			index[hash * 3 + 0] = px.rgba.r;
-			index[hash * 3 + 1] = px.rgba.g;
-			index[hash * 3 + 2] = px.rgba.b;
+			index[hash] = px;
 		} else {
 			run--;
 		}
 
-		pixels[p++] = px.rgba.r;
-		pixels[p++] = px.rgba.g;
-		pixels[p++] = px.rgba.b;
-		if constexpr (CHANNELS == 4) {
-			pixels[p++] = px.rgba.a;
-		}
+		write_pixel(px);
 	}
 
 	for (; run > 0; run--) {
-		pixels[p++] = px.rgba.r;
-		pixels[p++] = px.rgba.g;
-		pixels[p++] = px.rgba.b;
-		if constexpr (CHANNELS == 4) {
-			pixels[p++] = px.rgba.a;
-		}
+		write_pixel(px);
 	}
+	flush_pixel_cache();
 }
 
 std::vector<uint8_t> GPUQOI::decode(const std::vector<uint8_t>& encoded_data,
@@ -347,10 +373,10 @@ std::vector<uint8_t> GPUQOI::decode(const std::vector<uint8_t>& encoded_data,
 	segment_offsets.reserve(num_segs);
 	segment_offsets.push_back(0);
 
-	size_t offsets_idx = encoded_data.size() - 4 - 4 - (num_segs - 1) * 4;
+	size_t offsets_idx = encoded_data.size() - 4 - 4 - (num_segs - 1) * 2;
 	for (int i = 0; i < num_segs - 1; i++) {
-		uint32_t offset;
-		memcpy(&offset, &encoded_data[offsets_idx + i * 4], 4);
+		uint16_t offset;
+		memcpy(&offset, &encoded_data[offsets_idx + i * 2], 2);
 
 		auto tail = segment_offsets[segment_offsets.size() - 1];
 		segment_offsets.push_back(offset + tail);
