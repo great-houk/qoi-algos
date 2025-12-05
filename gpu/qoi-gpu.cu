@@ -15,7 +15,7 @@ static const size_t SEGMENT = 1 << 10;	// Must be a power of 2
 static const size_t SEGMENT_MASK = SEGMENT - 1;
 static const uint8_t SEGMENT_FOOTER[] = {'S', 'E', 'G', 'S'};
 static const int threadsPerBlock = 128;
-static const int sharedDataCacheSize = 1 << 6;
+static const int sharedDataCacheSize = 1 << 7;
 
 #define CHECK(stmt)                                                 \
 	{                                                               \
@@ -249,7 +249,7 @@ __global__ void decode_into_segment(uint8_t* data_g,
 						 ? SEGMENT
 						 : data_size - (entry_idx * SEGMENT);
 
-	size_t b = 0, b_s = 0, p = 0, p_s = 0;
+	size_t b = 0, b_s = 0, p = 0;
 	uint8_t run = 0;
 	qoi_rgba_t px = {.v = 0xFF000000};
 	qoi_rgba_t index[64];
@@ -266,25 +266,6 @@ __global__ void decode_into_segment(uint8_t* data_g,
 	auto get_data = [&] {
 		b++, b_s++;
 		return data_s[(b_s - 1) + threadIdx.x * sharedDataCacheSize];
-	};
-
-	__shared__ uint8_t pixels_s[threadsPerBlock * sharedDataCacheSize];
-	auto flush_pixel_cache = [&] {
-		memcpy(&pixels[p], &pixels_s[threadIdx.x * sharedDataCacheSize], p_s);
-		p += p_s;
-		p_s = 0;
-	};
-
-	auto write_pixel = [&](auto px) {
-		if (p_s >= sharedDataCacheSize) {
-			flush_pixel_cache();
-		}
-		pixels_s[threadIdx.x * sharedDataCacheSize + p_s++] = px.rgba.r;
-		pixels_s[threadIdx.x * sharedDataCacheSize + p_s++] = px.rgba.g;
-		pixels_s[threadIdx.x * sharedDataCacheSize + p_s++] = px.rgba.b;
-		if constexpr (CHANNELS == 4) {
-			pixels_s[threadIdx.x * sharedDataCacheSize + p_s++] = px.rgba.a;
-		}
 	};
 
 	while (b < n_bytes) {
@@ -326,13 +307,22 @@ __global__ void decode_into_segment(uint8_t* data_g,
 			run--;
 		}
 
-		write_pixel(px);
+		pixels[p++] = px.rgba.r;
+		pixels[p++] = px.rgba.g;
+		pixels[p++] = px.rgba.b;
+		if constexpr (CHANNELS == 4) {
+			pixels[p++] = px.rgba.a;
+		}
 	}
 
 	for (; run > 0; run--) {
-		write_pixel(px);
+		pixels[p++] = px.rgba.r;
+		pixels[p++] = px.rgba.g;
+		pixels[p++] = px.rgba.b;
+		if constexpr (CHANNELS == 4) {
+			pixels[p++] = px.rgba.a;
+		}
 	}
-	flush_pixel_cache();
 }
 
 std::vector<uint8_t> GPUQOI::decode(const std::vector<uint8_t>& encoded_data,
