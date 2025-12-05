@@ -2,8 +2,8 @@
 #SBATCH --partition=instruction
 #SBATCH --time=00:05:00
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=12
-#SBATCH --gpus-per-task=2
+#SBATCH --cpus-per-task=16
+#SBATCH --gpus-per-task=1
 #SBATCH --output=output
 
 cd "$SLURM_SUBMIT_DIR"
@@ -19,4 +19,4 @@ fi
 
 # Build and run
 make
-./bin/bench 1 images_small
+./bin/bench 3 images_small

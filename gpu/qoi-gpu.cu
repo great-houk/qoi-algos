@@ -378,10 +378,9 @@ std::vector<uint8_t> GPUQOI::decode(const std::vector<uint8_t>& encoded_data,
 	CHECK(cudaMemcpy(gpu_data, &encoded_data[sizeof(QOIHeader)], data_len,
 					 cudaMemcpyHostToDevice));
 
-	size_t num_pixels = spec.width * spec.height * spec.channels;
 	std::vector<uint8_t> pixels;
 	uint8_t* gpu_pixels = 0;
-	CHECK(cudaMalloc(&gpu_pixels, num_pixels));
+	CHECK(cudaMalloc(&gpu_pixels, px_len));
 
 	uint32_t* gpu_seg_offsets = 0;
 	CHECK(cudaMalloc(&gpu_seg_offsets, num_segs * sizeof(uint32_t)));
@@ -398,12 +397,12 @@ std::vector<uint8_t> GPUQOI::decode(const std::vector<uint8_t>& encoded_data,
 			gpu_data, data_len, gpu_seg_offsets, num_segs, gpu_pixels);
 	}
 
-	pixels.resize(num_pixels);
+	pixels.resize(px_len);
 
 	CHECK(cudaDeviceSynchronize());
 
-	CHECK(cudaMemcpy(pixels.data(), gpu_pixels, num_pixels,
-					 cudaMemcpyDeviceToHost));
+	CHECK(
+		cudaMemcpy(pixels.data(), gpu_pixels, px_len, cudaMemcpyDeviceToHost));
 
 	CHECK(cudaFree(gpu_data));
 	CHECK(cudaFree(gpu_pixels));
