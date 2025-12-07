@@ -17,6 +17,7 @@
 #include "single-cpu/qoi-sc.hpp"
 #include "multi-cpu/qoi-mc.hpp"
 #include "gpu-cuda/qoi-cuda.hpp"
+#include "gpu-segment/qoi-gpu.hpp"
 #include "stb/stb_image_write.h"
 
 struct Implementation {
@@ -45,8 +46,9 @@ int main(int argc, char** argv) {
 		{"Reference", new ReferenceQOI(), new ReferenceQOI()},
 		{"Single Threaded", new SingleCPUQOI(), new SingleCPUQOI()},
 		{"Multi Threaded", new MultiCPUQOI(), new MultiCPUQOI()},
-		{"GPU (CUDA)", new CUDAQOI(), new CUDAQOI()},
-		// {"Libpng", new Libpng(), new Libpng()},
+		{"GPU (Checkpoint)", new CUDAQOI(), new CUDAQOI()},
+		{"GPU (Segment)", new GPUQOI(), new GPUQOI()},
+		{"Libpng", new Libpng(), new Libpng()},
 		// {"StbImage", new StbImage(), new StbImage()},
 		// Comment to force formatting
 	};
@@ -112,6 +114,7 @@ int main(int argc, char** argv) {
 		uint64_t impl_total_raw_bytes_encoded =
 			0;	// sum of width*height*channels per run
 		uint64_t impl_total_pixels_encoded = 0;	 // sum of width*height per run
+		double impl_total_size_ratio = 0.0;
 
 		for (const auto& image : images) {
 			double total_encode_time = 0;
@@ -169,7 +172,9 @@ int main(int argc, char** argv) {
 			double size_ratio = encoded_data.empty()
 									? 0.0
 									: static_cast<double>(encoded_data.size()) /
-										  static_cast<double>(image.size);
+											  static_cast<double>(image.size) -
+										  1.0;
+
 			std::cout << std::left << std::setw(20) << impl.name
 					  << std::setw(40)
 					  << image.path.substr(image.path.find_last_of("/") + 1)
@@ -182,11 +187,10 @@ int main(int argc, char** argv) {
 							  ? std::to_string(total_decode_time / num_runs)
 							  : "N/A")
 					  << std::setw(20)
-					  << (size_ratio > 0.0 ? "+" : "-") +
+					  << (size_ratio > 0.0 ? "+" : "") +
 							 (encoded_data.empty()
 								  ? "N/A"
-								  : std::to_string((size_ratio - 1.0) *
-												   100.0)) +
+								  : std::to_string(size_ratio * 100.0)) +
 							 "%"
 					  << std::setw(15) << (verified ? "Yes" : "No")
 					  << std::endl;
@@ -204,6 +208,7 @@ int main(int argc, char** argv) {
 				pixels * static_cast<uint64_t>(num_runs);
 			impl_total_encode_time_ms += total_encode_time;
 			impl_total_decode_time_ms += total_decode_time;
+			impl_total_size_ratio += size_ratio;
 		}
 
 		// After all images for this implementation, compute MB/s and Mp/s
@@ -232,6 +237,11 @@ int main(int argc, char** argv) {
 				   impl_total_encode_time_ms, "Encode avg");
 		print_rate(impl_total_raw_bytes_encoded, impl_total_pixels_encoded,
 				   impl_total_decode_time_ms, "Decode avg");
+		std::cout << "  Average Compression Ratio v.s. Reference: "
+				  << std::fixed << std::setprecision(2)
+				  << (impl_total_size_ratio /
+					  static_cast<double>(images.size()) * 100.0)
+				  << "%" << std::endl;
 
 		std::cout << std::endl;
 	}
