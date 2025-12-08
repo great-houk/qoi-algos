@@ -52,44 +52,6 @@ static void close_socket(socket_t s)
 }
 #endif
 
-
-// ---- Cross-platform helpers ----
-#ifdef _WIN32
-using socket_t = SOCKET;
-
-static bool init_sockets() {
-    WSADATA wsa;
-    return WSAStartup(MAKEWORD(2,2), &wsa) == 0;
-}
-
-static void cleanup_sockets() {
-    WSACleanup();
-}
-
-static void close_socket(socket_t s) {
-    closesocket(s);
-}
-
-static int64_t recv_wrapper(socket_t s, void* buf, size_t len) {
-    return recv(s, static_cast<char*>(buf), (int)len, 0);
-}
-
-#else  // LINUX/UNIX
-using socket_t = int;
-
-static bool init_sockets() { return true; }
-static void cleanup_sockets() {}
-
-static void close_socket(socket_t s) {
-    close(s);
-}
-
-static int64_t recv_wrapper(socket_t s, void* buf, size_t len) {
-    return read(s, buf, len);
-}
-
-#endif
-
 std::vector<uint8_t>* grabNextPhotoData()
 {
     static int currPhoto = 0;
@@ -147,22 +109,15 @@ int main()
         return -1;
     }
 
-    auto start = std::chrono::high_resolution_clock::now();
-
-    size_t total = 0;
-    std::vector<uint8_t> buf(4096);
-
-    while (true) {
-        int64_t n = recv_wrapper(client, buf.data(), buf.size());
-        if (n <= 0)
-            break;
-        total += n;
+    // Send data
+    for (int i = 0; i < 50; i++) {
+        std::vector<uint8_t>* photoData = grabNextPhotoData();
+        send(sock,
+             reinterpret_cast<const char*>(photoData->data()),
+             static_cast<int>(photoData->size()),
+             0);
+        std::cout << "Message sent" << std::endl;
     }
-
-    auto end = std::chrono::high_resolution_clock::now();
-    double seconds = std::chrono::duration<double>(end - start).count();
-
-    std::cout << "Received " << total << " bytes in " << seconds << " seconds\n";
 
     // Close socket
     close_socket(sock);
