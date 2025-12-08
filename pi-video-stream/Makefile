@@ -1,6 +1,6 @@
-CXX = g++
+CXX      = g++
 CXXFLAGS = -std=c++17 -Wall -Wextra -O2
-LDFLAGS = -lstdc++fs
+LDFLAGS  = -lws2_32 -lstdc++fs   # <- needed for Windows (Winsock + filesystem)
 
 # Targets
 SERVER = server
@@ -14,26 +14,27 @@ CLIENT_SRC = client.cpp image_loader.cpp
 SERVER_OBJ = $(SERVER_SRC:.cpp=.o)
 CLIENT_OBJ = $(CLIENT_SRC:.cpp=.o)
 
-.PHONY: all server client clean
+.PHONY: all clean run_server run_client
 
 all: $(SERVER) $(CLIENT)
 
-server: $(SERVER)
-	./$(SERVER)
-
-client: $(CLIENT)
-	./$(CLIENT)
-
+# Link binaries
 $(SERVER): $(SERVER_OBJ)
-	$(CXX) $(CXXFLAGS) -o $(SERVER) $(SERVER_OBJ) $(LDFLAGS)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
 
 $(CLIENT): $(CLIENT_OBJ)
-	$(CXX) $(CXXFLAGS) -o $(CLIENT) $(CLIENT_OBJ) $(LDFLAGS)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
 
+# Compile objects
 %.o: %.cpp
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
+# Run helpers (optional)
+run_server: $(SERVER)
+	./$(SERVER)
+
+run_client: $(CLIENT)
+	./$(CLIENT)
+
 clean:
 	rm -f $(SERVER_OBJ) $(CLIENT_OBJ) $(SERVER) $(CLIENT)
-
-.PHONY: all server client clean
