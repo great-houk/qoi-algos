@@ -1,74 +1,55 @@
-// C++ program to illustrate the client application in the
-// socket programming
-#include <cstring>
-#include <iostream>
+#include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
+
+#include <cstring>
+#include <iostream>
 #include <vector>
-#include <thread>
-#include <dirent.h>
-#include <filesystem>
-#include <fstream>
 
 #include "image_loader.hpp"
 
-
-
-struct ImageData {
-	std::string path;
-	std::vector<uint8_t> data;
-	int size;
-};
-
-
-int createConnection(int &client_socket, sockaddr_in &server_addr) {
-    int status;
-    // creating socket
-    client_socket = socket(AF_INET, SOCK_STREAM, 0);
-
-    // specifying address
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(8080);
-    server_addr.sin_addr.s_addr = INADDR_ANY;
-
-    // sending connection request
-    status = connect(client_socket, (struct sockaddr*)&server_addr, sizeof(server_addr));
-
-    return status;
-}
+#define PORT 8080
 
 std::vector<uint8_t>* grabNextPhotoData() {
-    static int currPhoto = 0;
-    initImages();
+	static int currPhoto = 0;
+	initImages();
 
-    return &images[currPhoto++].data;
+	return &images[currPhoto++].data;
 }
 
+int main() {
+	int sock = 0;
+	struct sockaddr_in serv_addr;
+	const char* hello = "Hello from client";
 
-int sendMessage(const char* message, int client_socket) {
-    // sending data
-    return send(client_socket, message, strlen(message), 0);
+	// Create socket
+	sock = socket(AF_INET, SOCK_STREAM, 0);
+	if (sock < 0) {
+		std::cerr << "Socket creation error" << std::endl;
+		return -1;
+	}
 
-}
+	serv_addr.sin_family = AF_INET;
+	serv_addr.sin_port = htons(PORT);
 
-int main()
-{
-    int status;
-    int client_socket;
-    sockaddr_in server_addr;
-    
+	// Convert IPv4 and IPv6 addresses from text to binary
+	if (inet_pton(AF_INET, "127.0.0.1", &serv_addr.sin_addr) <= 0) {
+		std::cerr << "Invalid address/ Address not supported" << std::endl;
+		return -1;
+	}
 
-    status = createConnection(client_socket, server_addr);
-    if(!status) return status;
+	// Connect to server
+	if (connect(sock, (struct sockaddr*)&serv_addr, sizeof(serv_addr)) < 0) {
+		std::cerr << "Connection Failed" << std::endl;
+		return -1;
+	}
 
-    
-    status = sendMessage((char*) grabNextPhotoData(), client_socket);
-    if(!status) return status;
+	// Send data
+	send(sock, hello, strlen(hello), 0);
+	std::cout << "Message sent" << std::endl;
 
-    
-    // closing socket
-    close(client_socket);
-
-    return 0;
+	// Close socket
+	close(sock);
+	return 0;
 }
