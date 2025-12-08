@@ -47,29 +47,20 @@ OUTER_LIST=(1 2 4 8 16 32 64)
 # Images to process (relative to repo root)
 IMAGES_DIR=../images
 
+out_log="../batch-${SLURM_JOB_ID}.log"
 for outer in "${OUTER_LIST[@]}"; do
     if [ "$outer" -le 0 ]; then
         continue
     fi
-    # compute inner threads so product <= ALLOC_CPUS
-    inner=$(( ALLOC_CPUS / outer ))
-    if [ "$inner" -lt 1 ]; then
-        inner=1
-    fi
 
-    out_log="../batch-multi-outer${outer}-inner${inner}-${SLURM_JOB_ID}.log"
-    echo "Running outer=$outer inner=$inner -> log=$out_log"
-
-    # Export per-run OMP settings
-    export OMP_NUM_THREADS=${inner}
-    export OMP_THREAD_LIMIT=${inner}
+    echo "Running outer=$outer -> log=$out_log"
 
     # Run the benchmark. We pass --outer and --inner to the binary so it can
     # coordinate nested parallelism accordingly. The binary prints timing and throughput.
-    ../bin/batch-multi --outer ${outer} --inner ${inner} ${IMAGES_DIR}/*.qoi > "${out_log}" 2>&1
+    ../bin/batch-multi -r 10 --outer ${outer} ${IMAGES_DIR}/*.qoi >> "${out_log}" 2>&1
 
-    echo "Completed outer=${outer} inner=${inner} (log: ${out_log})"
+    echo "Completed outer=${outer} (log: ${out_log})"
     sleep 1
 done
 
-echo "All runs finished. Logs are in the parent directory (../) named batch-multi-outer*-inner*-${SLURM_JOB_ID}.log"
+echo "All runs finished. Logs are in the parent directory (../) named batch-multi-${SLURM_JOB_ID}.log"
