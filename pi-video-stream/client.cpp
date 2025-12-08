@@ -15,7 +15,9 @@ std::vector<uint8_t>* grabNextPhotoData() {
 	static int currPhoto = 0;
 	initImages();
 
-	return &images[currPhoto++].data;
+	auto ret = &images[currPhoto++].data;
+	currPhoto %= images.size();
+	return ret;
 }
 
 int main() {
@@ -33,7 +35,7 @@ int main() {
 	serv_addr.sin_port = htons(PORT);
 
 	// Convert IPv4 and IPv6 addresses from text to binary
-	if (inet_pton(AF_INET, "192.168.0.52", &serv_addr.sin_addr) <= 0) {
+	if (inet_pton(AF_INET, "192.168.137.47", &serv_addr.sin_addr) <= 0) {
 		std::cerr << "Invalid address/ Address not supported" << std::endl;
 		return -1;
 	}
@@ -45,9 +47,11 @@ int main() {
 	}
 
 	// Send data
-	std::vector<uint8_t>* photoData = grabNextPhotoData();
-	send(sock, photoData->data(), photoData->size(), 0);
-	std::cout << "Message sent" << std::endl;
+	for (int i = 0; i < 50; i++) {
+		std::vector<uint8_t>* photoData = grabNextPhotoData();
+		send(sock, photoData->data(), photoData->size(), 0);
+		std::cout << "Message sent" << std::endl;
+	}
 
 	// Close socket
 	close(sock);
