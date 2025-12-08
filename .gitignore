@@ -10,3 +10,4 @@ output
 *.csvopencv/
 server
 client
+*.exe
