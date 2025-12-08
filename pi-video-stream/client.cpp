@@ -21,7 +21,6 @@ std::vector<uint8_t>* grabNextPhotoData() {
 int main() {
 	int sock = 0;
 	struct sockaddr_in serv_addr;
-	const char* hello = "Hello from client";
 
 	// Create socket
 	sock = socket(AF_INET, SOCK_STREAM, 0);
@@ -34,7 +33,7 @@ int main() {
 	serv_addr.sin_port = htons(PORT);
 
 	// Convert IPv4 and IPv6 addresses from text to binary
-	if (inet_pton(AF_INET, "127.0.0.1", &serv_addr.sin_addr) <= 0) {
+	if (inet_pton(AF_INET, "192.168.0.52", &serv_addr.sin_addr) <= 0) {
 		std::cerr << "Invalid address/ Address not supported" << std::endl;
 		return -1;
 	}
@@ -46,7 +45,8 @@ int main() {
 	}
 
 	// Send data
-	send(sock, hello, strlen(hello), 0);
+	std::vector<uint8_t>* photoData = grabNextPhotoData();
+	send(sock, photoData->data(), photoData->size(), 0);
 	std::cout << "Message sent" << std::endl;
 
 	// Close socket

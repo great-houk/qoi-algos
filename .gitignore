@@ -8,3 +8,5 @@ test_params
 bench.output
 output
 *.csvopencv/
+server
+client
