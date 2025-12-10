@@ -22,6 +22,8 @@
 #include <thread>
 #include <vector>
 #include <chrono>
+#include <algorithm>
+#include <cerrno>
 
 #ifndef _WIN32
 #include <sys/mman.h>
@@ -175,12 +177,20 @@ int main() {
 	}
 
 	libcamera::StreamConfiguration& cfg = config->at(0);
-	// Pick the smallest available size to minimize bandwidth.
 	const libcamera::StreamFormats& formats = cfg.formats();
+
+	// Prefer RGB888 if available; otherwise fall back to the first reported format.
+	libcamera::PixelFormat chosen_pf = libcamera::formats::RGB888;
 	std::vector<libcamera::PixelFormat> pixel_formats = formats.pixelformats();
-	if (!pixel_formats.empty()) {
-		cfg.pixelFormat = pixel_formats.front();
+	if (std::find(pixel_formats.begin(), pixel_formats.end(), chosen_pf) ==
+		pixel_formats.end()) {
+		if (!pixel_formats.empty()) {
+			chosen_pf = pixel_formats.front();
+		}
 	}
+	cfg.pixelFormat = chosen_pf;
+
+	// Pick the smallest available size for the chosen format to minimize bandwidth.
 	std::vector<libcamera::Size> sizes = formats.sizes(cfg.pixelFormat);
 	if (!sizes.empty()) {
 		libcamera::Size min_size = sizes.front();
@@ -224,19 +234,37 @@ int main() {
 	// Map buffers
 	struct MappedBuffer {
 		libcamera::FrameBuffer* fb;
-		std::vector<void*> mmaps;
-		std::vector<size_t> lengths;
+		std::vector<void*> map_bases;
+		std::vector<void*> data_ptrs;
+		std::vector<size_t> map_lengths;
 	};
 	std::map<libcamera::FrameBuffer*, MappedBuffer> buffer_map;
 
 	for (const std::unique_ptr<libcamera::FrameBuffer>& fb :
 		 allocator.buffers(stream)) {
-		MappedBuffer mb{fb.get(), {}, {}};
+		MappedBuffer mb{fb.get(), {}, {}, {}};
 		for (const auto& plane : fb->planes()) {
-			void* addr = mmap(nullptr, plane.length, PROT_READ, MAP_SHARED,
-							  plane.fd.get(), plane.offset);
-			if (addr == MAP_FAILED) {
-				std::cerr << "mmap failed" << std::endl;
+			size_t page = static_cast<size_t>(sysconf(_SC_PAGESIZE));
+			if (page == 0)
+				page = 4096;
+			const size_t aligned_offset =
+				plane.offset & ~(page - 1);
+			const size_t offset_delta = plane.offset - aligned_offset;
+			const size_t map_length = plane.length + offset_delta;
+
+			void* map_base = mmap(nullptr, map_length, PROT_READ, MAP_SHARED,
+								  plane.fd.get(), aligned_offset);
+			if (map_base == MAP_FAILED) {
+				int err = errno;
+				std::cerr << "mmap failed (read-only), errno=" << err << " ("
+						  << std::strerror(err) << "), retrying RW" << std::endl;
+				map_base = mmap(nullptr, map_length, PROT_READ | PROT_WRITE,
+								MAP_SHARED, plane.fd.get(), aligned_offset);
+			}
+			if (map_base == MAP_FAILED) {
+				int err = errno;
+				std::cerr << "mmap failed even with PROT_WRITE, errno=" << err
+						  << " (" << std::strerror(err) << ")" << std::endl;
 				camera->release();
 				camera.reset();
 				cm.stop();
@@ -245,8 +273,12 @@ int main() {
 				cleanup_sockets();
 				return -1;
 			}
-			mb.mmaps.push_back(addr);
-			mb.lengths.push_back(plane.length);
+
+			uint8_t* data_ptr =
+				static_cast<uint8_t*>(map_base) + static_cast<std::ptrdiff_t>(offset_delta);
+			mb.map_bases.push_back(map_base);
+			mb.data_ptrs.push_back(data_ptr);
+			mb.map_lengths.push_back(map_length);
 		}
 		buffer_map[fb.get()] = std::move(mb);
 	}
@@ -299,7 +331,7 @@ int main() {
 					md.planes().empty() ? 0 : md.planes()[0].bytesused;
 				if (bytes_used == 0)
 					bytes_used = f.pixels.size();
-				std::memcpy(f.pixels.data(), mb.mmaps[0],
+				std::memcpy(f.pixels.data(), mb.data_ptrs[0],
 							std::min(bytes_used, f.pixels.size()));
 			}
 
@@ -424,16 +456,16 @@ int main() {
 	cv_not_full.notify_all();
 	cv_not_empty.notify_all();
 
-	if (camera) {
-		camera->stop();
-		for (auto& kv : buffer_map) {
-			for (size_t i = 0; i < kv.second.mmaps.size(); ++i) {
-				munmap(kv.second.mmaps[i], kv.second.lengths[i]);
+		if (camera) {
+			camera->stop();
+			for (auto& kv : buffer_map) {
+				for (size_t i = 0; i < kv.second.map_bases.size(); ++i) {
+					munmap(kv.second.map_bases[i], kv.second.map_lengths[i]);
+				}
 			}
+			camera->release();
+			camera.reset();
 		}
-		camera->release();
-		camera.reset();
-	}
 	cm.stop();
 
 	close_socket(client);
