@@ -4,8 +4,15 @@ OS_NAME := $(shell uname -s 2>/dev/null || echo Windows_NT)
 # --- OpenCV discovery (pkg-config only) ---
 OPENCV_CFLAGS := $(shell pkg-config --cflags opencv4 2>/dev/null || pkg-config --cflags opencv 2>/dev/null)
 OPENCV_LIBS   := $(shell pkg-config --libs opencv4 2>/dev/null || pkg-config --libs opencv 2>/dev/null)
+
 LIBCAMERA_CFLAGS := $(shell pkg-config --cflags libcamera 2>/dev/null)
 LIBCAMERA_LIBS   := $(shell pkg-config --libs libcamera 2>/dev/null)
+ifeq ($(strip $(LIBCAMERA_CFLAGS)),)
+	LIBCAMERA_CFLAGS := -I/usr/include/libcamera
+endif
+ifeq ($(strip $(LIBCAMERA_LIBS)),)
+	LIBCAMERA_LIBS := -lcamera -lcamera-base
+endif
 
 # --- Platform-specific flags ---
 WSOCK_LIB =
