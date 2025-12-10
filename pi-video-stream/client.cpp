@@ -181,7 +181,8 @@ int main() {
 	libcamera::StreamConfiguration& cfg = config->at(0);
 	const libcamera::StreamFormats& formats = cfg.formats();
 
-	// Prefer RGB888 if available; otherwise fall back to the first reported format.
+	// Prefer RGB888 if available; otherwise fall back to the first reported
+	// format.
 	libcamera::PixelFormat chosen_pf = libcamera::formats::RGB888;
 	std::vector<libcamera::PixelFormat> pixel_formats = formats.pixelformats();
 	if (std::find(pixel_formats.begin(), pixel_formats.end(), chosen_pf) ==
@@ -192,12 +193,13 @@ int main() {
 	}
 	cfg.pixelFormat = chosen_pf;
 
-	// Pick the smallest available size for the chosen format to minimize bandwidth.
+	// Pick the smallest available size for the chosen format to minimize
+	// bandwidth.
 	std::vector<libcamera::Size> sizes = formats.sizes(cfg.pixelFormat);
 	if (!sizes.empty()) {
 		libcamera::Size min_size = sizes.front();
 		for (const auto& s : sizes) {
-			if (s.width * s.height < min_size.width * min_size.height) {
+			if (s.width * s.height >= min_size.width * min_size.height) {
 				min_size = s;
 			}
 		}
@@ -210,7 +212,8 @@ int main() {
 	config->validate();
 
 	std::cout << "Configured stream: format=" << cfg.pixelFormat.toString()
-			  << " size=" << cfg.size.width << "x" << cfg.size.height << std::endl;
+			  << " size=" << cfg.size.width << "x" << cfg.size.height
+			  << std::endl;
 
 	if (camera->configure(config.get())) {
 		std::cerr << "Failed to configure camera" << std::endl;
@@ -252,8 +255,7 @@ int main() {
 			size_t page = static_cast<size_t>(sysconf(_SC_PAGESIZE));
 			if (page == 0)
 				page = 4096;
-			const size_t aligned_offset =
-				plane.offset & ~(page - 1);
+			const size_t aligned_offset = plane.offset & ~(page - 1);
 			const size_t offset_delta = plane.offset - aligned_offset;
 			const size_t map_length = plane.length + offset_delta;
 
@@ -262,7 +264,8 @@ int main() {
 			if (map_base == MAP_FAILED) {
 				int err = errno;
 				std::cerr << "mmap failed (read-only), errno=" << err << " ("
-						  << std::strerror(err) << "), retrying RW" << std::endl;
+						  << std::strerror(err) << "), retrying RW"
+						  << std::endl;
 				map_base = mmap(nullptr, map_length, PROT_READ | PROT_WRITE,
 								MAP_SHARED, plane.fd.get(), aligned_offset);
 			}
@@ -279,8 +282,8 @@ int main() {
 				return -1;
 			}
 
-			uint8_t* data_ptr =
-				static_cast<uint8_t*>(map_base) + static_cast<std::ptrdiff_t>(offset_delta);
+			uint8_t* data_ptr = static_cast<uint8_t*>(map_base) +
+								static_cast<std::ptrdiff_t>(offset_delta);
 			mb.map_bases.push_back(map_base);
 			mb.data_ptrs.push_back(data_ptr);
 			mb.map_lengths.push_back(map_length);
@@ -324,10 +327,11 @@ int main() {
 
 			auto now = std::chrono::steady_clock::now();
 			if (last_capture.time_since_epoch().count() != 0) {
-				double interval_ms =
-					std::chrono::duration<double, std::milli>(now - last_capture)
-						.count();
-				std::cout << "Capture interval: " << interval_ms << " ms" << std::endl;
+				double interval_ms = std::chrono::duration<double, std::milli>(
+										 now - last_capture)
+										 .count();
+				std::cout << "Capture interval: " << interval_ms << " ms"
+						  << std::endl;
 			}
 			last_capture = now;
 
@@ -355,8 +359,10 @@ int main() {
 			{
 				std::unique_lock<std::mutex> lock(*mtx);
 				if (queue->size() >= *kMaxQueue) {
-					queue->pop_front();  // drop oldest to avoid blocking capture
-					std::cout << "Dropping oldest frame to keep up" << std::endl;
+					queue
+						->pop_front();	// drop oldest to avoid blocking capture
+					std::cout << "Dropping oldest frame to keep up"
+							  << std::endl;
 				}
 				queue->push_back(std::move(f));
 				cv_not_empty->notify_one();
@@ -367,26 +373,21 @@ int main() {
 		}
 	};
 
-	RequestHandler handler{camera.get(),
-						   &cfg,
-						   &buffer_map,
-						   &queue,
-						   &mtx,
-						   &cv_not_full,
-						   &cv_not_empty,
-						   &kMaxQueue,
-						   &running};
-	camera->requestCompleted.connect(&handler, &RequestHandler::on_request_complete);
+	RequestHandler handler{camera.get(),  &cfg,		  &buffer_map,
+						   &queue,		  &mtx,		  &cv_not_full,
+						   &cv_not_empty, &kMaxQueue, &running};
+	camera->requestCompleted.connect(&handler,
+									 &RequestHandler::on_request_complete);
 
-		const int64_t frame_time_us = 1000000LL / 30;  // ~33.3 ms
-		const int64_t exposure_us = std::max<int64_t>(500, frame_time_us - 1000);
+	const int64_t frame_time_us = 1000000LL / 30;  // ~33.3 ms
+	const int64_t exposure_us = std::max<int64_t>(500, frame_time_us - 1000);
 
-		std::vector<std::unique_ptr<libcamera::Request>> requests;
-		for (const std::unique_ptr<libcamera::FrameBuffer>& fb :
-			 allocator.buffers(stream)) {
-			std::unique_ptr<libcamera::Request> req = camera->createRequest();
-			if (!req) {
-				std::cerr << "Failed to create request" << std::endl;
+	std::vector<std::unique_ptr<libcamera::Request>> requests;
+	for (const std::unique_ptr<libcamera::FrameBuffer>& fb :
+		 allocator.buffers(stream)) {
+		std::unique_ptr<libcamera::Request> req = camera->createRequest();
+		if (!req) {
+			std::cerr << "Failed to create request" << std::endl;
 			running = false;
 			break;
 		}
@@ -395,30 +396,32 @@ int main() {
 			running = false;
 			break;
 		}
-			// Units are microseconds for these controls.
-			std::array<int64_t, 2> limits{frame_time_us, frame_time_us};
-			req->controls().set(libcamera::controls::FrameDurationLimits,
-								libcamera::Span<const int64_t, 2>(limits));
-			req->controls().set(libcamera::controls::ExposureTime, exposure_us);
-			req->controls().set(libcamera::controls::AeEnable, false);
-			requests.push_back(std::move(req));
+		// Units are microseconds for these controls.
+		std::array<int64_t, 2> limits{frame_time_us, frame_time_us};
+		req->controls().set(libcamera::controls::FrameDurationLimits,
+							libcamera::Span<const int64_t, 2>(limits));
+		req->controls().set(libcamera::controls::ExposureTime, exposure_us);
+		req->controls().set(libcamera::controls::AeEnable, false);
+		requests.push_back(std::move(req));
+	}
+
+	if (running) {
+		libcamera::ControlList start_controls(camera->controls());
+		start_controls.set(
+			libcamera::controls::FrameDurationLimits,
+			libcamera::Span<const int64_t, 2>(
+				std::array<int64_t, 2>{frame_time_us, frame_time_us}));
+		start_controls.set(libcamera::controls::ExposureTime, exposure_us);
+		start_controls.set(libcamera::controls::AeEnable, false);
+
+		if (camera->start(&start_controls)) {
+			std::cerr << "Failed to start camera" << std::endl;
+			running = false;
 		}
+	}
 
-		if (running) {
-			libcamera::ControlList start_controls(camera->controls());
-			start_controls.set(libcamera::controls::FrameDurationLimits,
-							   libcamera::Span<const int64_t, 2>(
-								   std::array<int64_t, 2>{frame_time_us, frame_time_us}));
-			start_controls.set(libcamera::controls::ExposureTime, exposure_us);
-			start_controls.set(libcamera::controls::AeEnable, false);
-
-			if (camera->start(&start_controls)) {
-				std::cerr << "Failed to start camera" << std::endl;
-				running = false;
-			}
-		}
-
-		// Note: libcamera::Camera has no isRunning(); start failure is handled above.
+	// Note: libcamera::Camera has no isRunning(); start failure is handled
+	// above.
 
 	if (running) {
 		for (auto& req : requests) {
@@ -428,73 +431,74 @@ int main() {
 				break;
 			}
 		}
-		}
+	}
 
-		// Encode/send thread: pops frames, encodes with multi-core QOI, sends.
-		std::thread encode_thread([&]() {
-			while (running) {
-				Frame f;
-				{
-					std::unique_lock<std::mutex> lock(mtx);
-					cv_not_empty.wait(lock,
-									  [&] { return !running || !queue.empty(); });
-					if (!running && queue.empty())
-						break;
-					f = std::move(queue.front());
-					queue.pop_front();
-					cv_not_full.notify_one();
-				}
-
-				QOIEncoderSpec spec{
-					f.width,
-					f.height,
-					3,
-					0,
-				};
-
-				auto encode_start = std::chrono::steady_clock::now();
-				std::vector<uint8_t> encoded = encoder.encode(f.pixels, spec);
-				auto encode_end = std::chrono::steady_clock::now();
-				double encode_ms =
-					std::chrono::duration<double, std::milli>(encode_end -
-															  encode_start)
-						.count();
-
-				auto send_start = std::chrono::steady_clock::now();
-				uint32_t payload_size = static_cast<uint32_t>(encoded.size());
-				uint32_t net_size = htonl(payload_size);
-
-				if (!send_all(client, reinterpret_cast<uint8_t*>(&net_size),
-							  sizeof(net_size))) {
-					std::cerr << "Failed to send frame length" << std::endl;
-					running = false;
-					cv_not_empty.notify_all();
+	// Encode/send thread: pops frames, encodes with multi-core QOI, sends.
+	std::thread encode_thread([&]() {
+		while (running) {
+			Frame f;
+			{
+				std::unique_lock<std::mutex> lock(mtx);
+				cv_not_empty.wait(lock,
+								  [&] { return !running || !queue.empty(); });
+				if (!running && queue.empty())
 					break;
-				}
-
-				if (!send_all(client, encoded.data(), encoded.size())) {
-					std::cerr << "Failed to send frame payload" << std::endl;
-					running = false;
-					cv_not_empty.notify_all();
-					break;
-				}
-				auto send_end = std::chrono::steady_clock::now();
-
-				double capture_to_encode_ms =
-					std::chrono::duration<double, std::milli>(encode_start - f.captured)
-						.count();
-				double send_ms =
-					std::chrono::duration<double, std::milli>(send_end - send_start)
-						.count();
-				double capture_to_send_ms =
-					std::chrono::duration<double, std::milli>(send_end - f.captured)
-						.count();
-				std::cout << "Timing: capture->encode_start=" << capture_to_encode_ms
-						  << " ms, encode=" << encode_ms << " ms, send=" << send_ms
-						  << " ms, capture->send=" << capture_to_send_ms << " ms"
-						  << std::endl;
+				f = std::move(queue.front());
+				queue.pop_front();
+				cv_not_full.notify_one();
 			}
-		});
+
+			QOIEncoderSpec spec{
+				f.width,
+				f.height,
+				3,
+				0,
+			};
+
+			auto encode_start = std::chrono::steady_clock::now();
+			std::vector<uint8_t> encoded = encoder.encode(f.pixels, spec);
+			auto encode_end = std::chrono::steady_clock::now();
+			double encode_ms = std::chrono::duration<double, std::milli>(
+								   encode_end - encode_start)
+								   .count();
+
+			auto send_start = std::chrono::steady_clock::now();
+			uint32_t payload_size = static_cast<uint32_t>(encoded.size());
+			uint32_t net_size = htonl(payload_size);
+
+			if (!send_all(client, reinterpret_cast<uint8_t*>(&net_size),
+						  sizeof(net_size))) {
+				std::cerr << "Failed to send frame length" << std::endl;
+				running = false;
+				cv_not_empty.notify_all();
+				break;
+			}
+
+			if (!send_all(client, encoded.data(), encoded.size())) {
+				std::cerr << "Failed to send frame payload" << std::endl;
+				running = false;
+				cv_not_empty.notify_all();
+				break;
+			}
+			auto send_end = std::chrono::steady_clock::now();
+
+			double capture_to_encode_ms =
+				std::chrono::duration<double, std::milli>(encode_start -
+														  f.captured)
+					.count();
+			double send_ms =
+				std::chrono::duration<double, std::milli>(send_end - send_start)
+					.count();
+			double capture_to_send_ms =
+				std::chrono::duration<double, std::milli>(send_end - f.captured)
+					.count();
+			std::cout << "Timing: capture->encode_start="
+					  << capture_to_encode_ms << " ms, encode=" << encode_ms
+					  << " ms, send=" << send_ms
+					  << " ms, capture->send=" << capture_to_send_ms << " ms"
+					  << std::endl;
+		}
+	});
 
 	std::cout << "Streaming frames..." << std::endl;
 
@@ -503,16 +507,16 @@ int main() {
 	cv_not_full.notify_all();
 	cv_not_empty.notify_all();
 
-		if (camera) {
-			camera->stop();
-			for (auto& kv : buffer_map) {
-				for (size_t i = 0; i < kv.second.map_bases.size(); ++i) {
-					munmap(kv.second.map_bases[i], kv.second.map_lengths[i]);
-				}
+	if (camera) {
+		camera->stop();
+		for (auto& kv : buffer_map) {
+			for (size_t i = 0; i < kv.second.map_bases.size(); ++i) {
+				munmap(kv.second.map_bases[i], kv.second.map_lengths[i]);
 			}
-			camera->release();
-			camera.reset();
 		}
+		camera->release();
+		camera.reset();
+	}
 	cm.stop();
 
 	close_socket(client);
