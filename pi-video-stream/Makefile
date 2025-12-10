@@ -1,18 +1,35 @@
 CXX      = g++
-CXXFLAGS = -std=c++17 -Wall -Wextra -O2
-LDFLAGS  = -lws2_32 -lstdc++fs   # <- needed for Windows (Winsock + filesystem)
+OS_NAME := $(shell uname -s 2>/dev/null || echo Windows_NT)
+
+# --- OpenCV discovery (pkg-config only) ---
+OPENCV_CFLAGS := $(shell pkg-config --cflags opencv4 2>/dev/null || pkg-config --cflags opencv 2>/dev/null)
+OPENCV_LIBS   := $(shell pkg-config --libs opencv4 2>/dev/null || pkg-config --libs opencv 2>/dev/null)
+
+# --- Platform-specific flags ---
+WSOCK_LIB =
+PTHREAD_FLAG =
+ifneq (,$(findstring NT,$(OS_NAME)))
+	WSOCK_LIB = -lws2_32
+else
+	PTHREAD_FLAG = -pthread
+endif
+
+CXXFLAGS = -std=c++17 -Wall -Wextra -O2 -fopenmp $(PTHREAD_FLAG) -I.. -I../multi-cpu $(OPENCV_CFLAGS)
+LDFLAGS  = $(WSOCK_LIB) $(OPENCV_LIBS) -fopenmp $(PTHREAD_FLAG)
 
 # Targets
 SERVER = server
 CLIENT = client
 
+COMMON_OBJ = qoi-mc.o
+
 # Source files
-SERVER_SRC = server.cpp image_loader.cpp
-CLIENT_SRC = client.cpp image_loader.cpp
+SERVER_SRC = server.cpp
+CLIENT_SRC = client.cpp
 
 # Object files
-SERVER_OBJ = $(SERVER_SRC:.cpp=.o)
-CLIENT_OBJ = $(CLIENT_SRC:.cpp=.o)
+SERVER_OBJ = $(SERVER_SRC:.cpp=.o) $(COMMON_OBJ)
+CLIENT_OBJ = $(CLIENT_SRC:.cpp=.o) $(COMMON_OBJ)
 
 .PHONY: all clean run_server run_client
 
@@ -27,6 +44,9 @@ $(CLIENT): $(CLIENT_OBJ)
 
 # Compile objects
 %.o: %.cpp
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(COMMON_OBJ): ../multi-cpu/qoi-mc.cpp ../multi-cpu/qoi-mc.hpp ../qoi.hpp
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 # Run helpers (optional)
