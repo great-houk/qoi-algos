@@ -309,12 +309,22 @@ int main() {
 		std::condition_variable* cv_not_empty;
 		const size_t* kMaxQueue;
 		std::atomic<bool>* running;
+		std::chrono::steady_clock::time_point last_capture{};
 
 		void on_request_complete(libcamera::Request* request) {
 			if (!running->load())
 				return;
 			if (request->status() == libcamera::Request::RequestCancelled)
 				return;
+
+			auto now = std::chrono::steady_clock::now();
+			if (last_capture.time_since_epoch().count() != 0) {
+				double interval_ms =
+					std::chrono::duration<double, std::milli>(now - last_capture)
+						.count();
+				std::cout << "Capture interval: " << interval_ms << " ms" << std::endl;
+			}
+			last_capture = now;
 
 			Frame f;
 			f.width = static_cast<uint32_t>(cfg->size.width);
@@ -339,10 +349,10 @@ int main() {
 
 			{
 				std::unique_lock<std::mutex> lock(*mtx);
-				cv_not_full->wait(
-					lock, [&] { return !running->load() || queue->size() < *kMaxQueue; });
-				if (!running->load())
-					return;
+				if (queue->size() >= *kMaxQueue) {
+					queue->pop_front();  // drop oldest to avoid blocking capture
+					std::cout << "Dropping oldest frame to keep up" << std::endl;
+				}
 				queue->push_back(std::move(f));
 				cv_not_empty->notify_one();
 			}
