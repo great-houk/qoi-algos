@@ -44,13 +44,21 @@ static bool init_sockets() {
 	WSADATA wsa;
 	return WSAStartup(MAKEWORD(2, 2), &wsa) == 0;
 }
-static void cleanup_sockets() { WSACleanup(); }
-static void close_socket(socket_t s) { closesocket(s); }
+static void cleanup_sockets() {
+	WSACleanup();
+}
+static void close_socket(socket_t s) {
+	closesocket(s);
+}
 #else
 using socket_t = int;
-static bool init_sockets() { return true; }
+static bool init_sockets() {
+	return true;
+}
 static void cleanup_sockets() {}
-static void close_socket(socket_t s) { close(s); }
+static void close_socket(socket_t s) {
+	close(s);
+}
 #endif
 
 static bool send_all(socket_t s, const uint8_t* data, size_t len) {
@@ -59,12 +67,13 @@ static bool send_all(socket_t s, const uint8_t* data, size_t len) {
 #ifdef _WIN32
 		int sent = send(s, reinterpret_cast<const char*>(data + total_sent),
 						static_cast<int>(len - total_sent), 0);
-		if (sent <= 0) return false;
+		if (sent <= 0)
+			return false;
 #else
-		ssize_t sent =
-			send(s, reinterpret_cast<const char*>(data + total_sent),
-				 len - total_sent, 0);
-		if (sent <= 0) return false;
+		ssize_t sent = send(s, reinterpret_cast<const char*>(data + total_sent),
+							len - total_sent, 0);
+		if (sent <= 0)
+			return false;
 #endif
 		total_sent += static_cast<size_t>(sent);
 	}
@@ -84,13 +93,12 @@ int main() {
 		return -1;
 	}
 
-	sockaddr_in addr {};
+	sockaddr_in addr{};
 	addr.sin_family = AF_INET;
 	addr.sin_addr.s_addr = INADDR_ANY;
 	addr.sin_port = htons(PORT);
 
-	if (bind(server_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) <
-		0) {
+	if (bind(server_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
 		std::cerr << "Bind failed" << std::endl;
 		close_socket(server_fd);
 		cleanup_sockets();
@@ -208,9 +216,8 @@ int main() {
 		 allocator.buffers(stream)) {
 		MappedBuffer mb{fb.get(), {}, {}};
 		for (const auto& plane : fb->planes()) {
-			void* addr =
-				mmap(nullptr, plane.length, PROT_READ, MAP_SHARED, plane.fd.fd(),
-					 plane.offset);
+			void* addr = mmap(nullptr, plane.length, PROT_READ, MAP_SHARED,
+							  plane.fd.get(), plane.offset);
 			if (addr == MAP_FAILED) {
 				std::cerr << "mmap failed" << std::endl;
 				camera->release();
@@ -237,47 +244,50 @@ int main() {
 	std::mutex mtx;
 	std::condition_variable cv_not_full;
 	std::condition_variable cv_not_empty;
-	const size_t kMaxQueue = 3;  // keep a small buffer to avoid lag
+	const size_t kMaxQueue = 3;	 // keep a small buffer to avoid lag
 	std::atomic<bool> running{true};
 
 	MultiCPUQOI encoder;
 
-	camera->requestCompleted.connect(
-		[&](libcamera::Request* request) {
-			if (!running) return;
-			if (request->status() == libcamera::Request::RequestCancelled)
+	camera->requestCompleted.connect([&](libcamera::Request* request) {
+		if (!running)
+			return;
+		if (request->status() == libcamera::Request::RequestCancelled)
+			return;
+
+		Frame f;
+		f.width = static_cast<uint32_t>(cfg.size.width);
+		f.height = static_cast<uint32_t>(cfg.size.height);
+		f.pixels.resize(static_cast<size_t>(f.width) * f.height * 3);
+
+		for (auto& [stream_ptr, buffer] : request->buffers()) {
+			(void)stream_ptr;
+			auto it = buffer_map.find(buffer);
+			if (it == buffer_map.end())
+				continue;
+			MappedBuffer& mb = it->second;
+			const libcamera::FrameMetadata& md = buffer->metadata();
+			size_t bytes_used =
+				md.planes().empty() ? 0 : md.planes()[0].bytesused;
+			if (bytes_used == 0)
+				bytes_used = f.pixels.size();
+			std::memcpy(f.pixels.data(), mb.mmaps[0],
+						std::min(bytes_used, f.pixels.size()));
+		}
+
+		{
+			std::unique_lock<std::mutex> lock(mtx);
+			cv_not_full.wait(
+				lock, [&] { return !running || queue.size() < kMaxQueue; });
+			if (!running)
 				return;
+			queue.push_back(std::move(f));
+			cv_not_empty.notify_one();
+		}
 
-			Frame f;
-			f.width = static_cast<uint32_t>(cfg.size.width);
-			f.height = static_cast<uint32_t>(cfg.size.height);
-			f.pixels.resize(static_cast<size_t>(f.width) * f.height * 3);
-
-			for (auto& [stream_ptr, buffer] : request->buffers()) {
-				(void)stream_ptr;
-				auto it = buffer_map.find(buffer);
-				if (it == buffer_map.end()) continue;
-				MappedBuffer& mb = it->second;
-				const libcamera::FrameMetadata& md = buffer->metadata();
-				size_t bytes_used =
-					md.planes().empty() ? 0 : md.planes()[0].bytesused;
-				if (bytes_used == 0) bytes_used = f.pixels.size();
-				std::memcpy(f.pixels.data(), mb.mmaps[0],
-							std::min(bytes_used, f.pixels.size()));
-			}
-
-			{
-				std::unique_lock<std::mutex> lock(mtx);
-				cv_not_full.wait(lock,
-								 [&] { return !running || queue.size() < kMaxQueue; });
-				if (!running) return;
-				queue.push_back(std::move(f));
-				cv_not_empty.notify_one();
-			}
-
-			request->reuse(libcamera::Request::ReuseBuffers);
-			camera->queueRequest(request);
-		});
+		request->reuse(libcamera::Request::ReuseBuffers);
+		camera->queueRequest(request);
+	});
 
 	std::vector<std::unique_ptr<libcamera::Request>> requests;
 	for (const std::unique_ptr<libcamera::FrameBuffer>& fb :
@@ -295,8 +305,9 @@ int main() {
 		}
 		// Set frame duration limits to target ~15 fps.
 		int64_t frame_time = 1000000000LL / 15;
-		req->controls().set(libcamera::controls::FrameDurationLimits,
-							libcamera::Span<const int64_t, 2>({frame_time, frame_time}));
+		req->controls().set(
+			libcamera::controls::FrameDurationLimits,
+			libcamera::Span<const int64_t, 2>({frame_time, frame_time}));
 		requests.push_back(std::move(req));
 	}
 
@@ -321,8 +332,10 @@ int main() {
 			Frame f;
 			{
 				std::unique_lock<std::mutex> lock(mtx);
-				cv_not_empty.wait(lock, [&] { return !running || !queue.empty(); });
-				if (!running && queue.empty()) break;
+				cv_not_empty.wait(lock,
+								  [&] { return !running || !queue.empty(); });
+				if (!running && queue.empty())
+					break;
 				f = std::move(queue.front());
 				queue.pop_front();
 				cv_not_full.notify_one();
