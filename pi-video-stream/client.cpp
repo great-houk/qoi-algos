@@ -113,6 +113,11 @@ int main() {
 		return -1;
 	}
 
+	// Request modest capture settings to reduce buffer pressure on the Pi.
+	cap.set(cv::CAP_PROP_FRAME_WIDTH, 640);
+	cap.set(cv::CAP_PROP_FRAME_HEIGHT, 480);
+	cap.set(cv::CAP_PROP_FPS, 15);
+
 	struct Frame {
 		std::vector<uint8_t> pixels;  // RGB bytes
 		uint32_t width;
