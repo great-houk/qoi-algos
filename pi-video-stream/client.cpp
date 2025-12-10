@@ -418,10 +418,7 @@ int main() {
 			}
 		}
 
-		if (running && !camera->isRunning()) {
-			std::cerr << "Failed to start camera" << std::endl;
-			running = false;
-		}
+		// Note: libcamera::Camera has no isRunning(); start failure is handled above.
 
 	if (running) {
 		for (auto& req : requests) {
