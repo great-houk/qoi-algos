@@ -21,6 +21,7 @@
 #include <mutex>
 #include <thread>
 #include <vector>
+#include <chrono>
 
 #ifndef _WIN32
 #include <sys/mman.h>
@@ -174,9 +175,25 @@ int main() {
 	}
 
 	libcamera::StreamConfiguration& cfg = config->at(0);
-	cfg.pixelFormat = libcamera::formats::RGB888;
-	cfg.size.width = 640;
-	cfg.size.height = 480;
+	// Pick the smallest available size to minimize bandwidth.
+	const libcamera::StreamFormats& formats = cfg.formats();
+	std::vector<libcamera::PixelFormat> pixel_formats = formats.pixelformats();
+	if (!pixel_formats.empty()) {
+		cfg.pixelFormat = pixel_formats.front();
+	}
+	std::vector<libcamera::Size> sizes = formats.sizes(cfg.pixelFormat);
+	if (!sizes.empty()) {
+		libcamera::Size min_size = sizes.front();
+		for (const auto& s : sizes) {
+			if (s.width * s.height < min_size.width * min_size.height) {
+				min_size = s;
+			}
+		}
+		cfg.size = min_size;
+	} else {
+		cfg.size.width = 640;
+		cfg.size.height = 480;
+	}
 	cfg.bufferCount = 4;
 	config->validate();
 
@@ -326,8 +343,8 @@ int main() {
 			running = false;
 			break;
 		}
-		// Set frame duration limits to target ~15 fps.
-		int64_t frame_time = 1000000000LL / 15;
+			// Set frame duration limits to target ~10 fps.
+			int64_t frame_time = 1000000000LL / 10;
 		req->controls().set(
 			libcamera::controls::FrameDurationLimits,
 			libcamera::Span<const int64_t, 2>({frame_time, frame_time}));
@@ -347,11 +364,11 @@ int main() {
 				break;
 			}
 		}
-	}
+		}
 
-	// Encode/send thread: pops frames, encodes with multi-core QOI, sends.
-	std::thread encode_thread([&]() {
-		while (running) {
+		// Encode/send thread: pops frames, encodes with multi-core QOI, sends.
+		std::thread encode_thread([&]() {
+			while (running) {
 			Frame f;
 			{
 				std::unique_lock<std::mutex> lock(mtx);
@@ -364,16 +381,24 @@ int main() {
 				cv_not_full.notify_one();
 			}
 
-			QOIEncoderSpec spec{
-				f.width,
-				f.height,
-				3,
-				0,
-			};
+				QOIEncoderSpec spec{
+					f.width,
+					f.height,
+					3,
+					0,
+				};
 
-			std::vector<uint8_t> encoded = encoder.encode(f.pixels, spec);
-			uint32_t payload_size = static_cast<uint32_t>(encoded.size());
-			uint32_t net_size = htonl(payload_size);
+				auto encode_start = std::chrono::steady_clock::now();
+				std::vector<uint8_t> encoded = encoder.encode(f.pixels, spec);
+				auto encode_end = std::chrono::steady_clock::now();
+				double encode_ms =
+					std::chrono::duration<double, std::milli>(encode_end -
+															  encode_start)
+						.count();
+				std::cout << "Encoded frame in " << encode_ms << " ms"
+						  << std::endl;
+				uint32_t payload_size = static_cast<uint32_t>(encoded.size());
+				uint32_t net_size = htonl(payload_size);
 
 			if (!send_all(client, reinterpret_cast<uint8_t*>(&net_size),
 						  sizeof(net_size))) {
