@@ -1,74 +1,35 @@
-CXX      = g++
-OS_NAME := $(shell uname -s 2>/dev/null || echo Windows_NT)
+CXX ?= g++
+PKG_CONFIG ?= pkg-config
+MC_INCLUDE ?= ../multi-cpu
+QOI_ROOT ?= ..
+MC_SRC ?= $(MC_INCLUDE)/qoi-mc.cpp
+OMPFLAGS ?= -fopenmp
 
-# --- OpenCV discovery (pkg-config only) ---
-OPENCV_CFLAGS := $(shell pkg-config --cflags opencv4 2>/dev/null || pkg-config --cflags opencv 2>/dev/null)
-OPENCV_LIBS   := $(shell pkg-config --libs opencv4 2>/dev/null || pkg-config --libs opencv 2>/dev/null)
+CXXFLAGS ?= -std=c++20 -Wall -Wextra -O2 -I$(MC_INCLUDE) -I$(QOI_ROOT)
+LDFLAGS ?=
 
-LIBCAMERA_CFLAGS := $(shell pkg-config --cflags libcamera 2>/dev/null)
-LIBCAMERA_LIBS   := $(shell pkg-config --libs libcamera 2>/dev/null)
-ifeq ($(strip $(LIBCAMERA_CFLAGS)),)
-	LIBCAMERA_CFLAGS := -I/usr/include/libcamera
-endif
-ifeq ($(strip $(LIBCAMERA_LIBS)),)
-	LIBCAMERA_LIBS := -lcamera -lcamera-base
-endif
+SERVER_EXE ?= server.exe
+CLIENT_EXE ?= client
 
-# --- Platform-specific flags ---
-WSOCK_LIB =
-PTHREAD_FLAG =
-ifneq (,$(findstring NT,$(OS_NAME)))
-	WSOCK_LIB = -lws2_32
-else
-	PTHREAD_FLAG = -pthread
-endif
+# Resolve third-party flags via pkg-config.
+SERVER_OPENCV_CFLAGS := $(shell $(PKG_CONFIG) --cflags opencv4 2>/dev/null)
+SERVER_OPENCV_LIBS   := $(shell $(PKG_CONFIG) --libs opencv4 2>/dev/null)
+CLIENT_CAM_CFLAGS    := $(shell $(PKG_CONFIG) --cflags libcamera 2>/dev/null)
+CLIENT_CAM_LIBS      := $(shell $(PKG_CONFIG) --libs libcamera 2>/dev/null)
 
-CXXFLAGS = -std=c++17 -Wall -Wextra -O2 -fopenmp $(PTHREAD_FLAG) -I.. -I../multi-cpu
+.PHONY: all server client clean
 
-SERVER_CXXFLAGS = $(CXXFLAGS) $(OPENCV_CFLAGS)
-CLIENT_CXXFLAGS = $(CXXFLAGS) $(LIBCAMERA_CFLAGS)
+all: server
 
-SERVER_LDFLAGS  = $(WSOCK_LIB) $(OPENCV_LIBS) -fopenmp $(PTHREAD_FLAG)
-CLIENT_LDFLAGS  = $(WSOCK_LIB) $(LIBCAMERA_LIBS) -lcamera -lcamera-base -fopenmp $(PTHREAD_FLAG)
+server: $(SERVER_EXE)
 
-# Targets
-SERVER = server
-CLIENT = client
+$(SERVER_EXE): server.cpp $(MC_SRC)
+	$(CXX) $(CXXFLAGS) $(OMPFLAGS) $(SERVER_OPENCV_CFLAGS) $^ -o $@ $(LDFLAGS) $(OMPFLAGS) $(SERVER_OPENCV_LIBS) -lws2_32
 
-COMMON_OBJ = qoi-mc.o
+client: $(CLIENT_EXE)
 
-# Source files
-SERVER_SRC = server.cpp
-CLIENT_SRC = client.cpp
-
-# Object files
-SERVER_OBJ = $(SERVER_SRC:.cpp=.o) $(COMMON_OBJ)
-CLIENT_OBJ = $(CLIENT_SRC:.cpp=.o) $(COMMON_OBJ)
-
-.PHONY: all clean run_server run_client
-
-all: $(SERVER) $(CLIENT)
-
-# Link binaries
-$(SERVER): $(SERVER_OBJ)
-	$(CXX) $(SERVER_CXXFLAGS) -o $@ $^ $(SERVER_LDFLAGS)
-
-$(CLIENT): $(CLIENT_OBJ)
-	$(CXX) $(CLIENT_CXXFLAGS) -o $@ $^ $(CLIENT_LDFLAGS)
-
-# Compile objects
-%.o: %.cpp
-	$(CXX) $(CXXFLAGS) -c $< -o $@
-
-$(COMMON_OBJ): ../multi-cpu/qoi-mc.cpp ../multi-cpu/qoi-mc.hpp ../qoi.hpp
-	$(CXX) $(CXXFLAGS) -c $< -o $@
-
-# Run helpers (optional)
-run_server: $(SERVER)
-	./$(SERVER)
-
-run_client: $(CLIENT)
-	./$(CLIENT)
+$(CLIENT_EXE): client.cpp $(MC_SRC)
+	$(CXX) $(CXXFLAGS) $(OMPFLAGS) $(CLIENT_CAM_CFLAGS) $^ -o $@ $(LDFLAGS) $(OMPFLAGS) $(CLIENT_CAM_LIBS) -pthread
 
 clean:
-	rm -f $(SERVER_OBJ) $(CLIENT_OBJ) $(SERVER) $(CLIENT)
+	rm -f $(SERVER_EXE) $(CLIENT_EXE)
