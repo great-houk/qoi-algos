@@ -193,31 +193,31 @@ int main() {
 	}
 	cfg.pixelFormat = chosen_pf;
 
-		// Prefer 720p if available; otherwise pick the closest size to 1280x720.
-		const libcamera::Size target_size{1280, 720};
-		std::vector<libcamera::Size> sizes = formats.sizes(cfg.pixelFormat);
-		if (!sizes.empty()) {
-			auto best = sizes.front();
-			auto score = [&](const libcamera::Size& s) {
-				int dx = static_cast<int>(s.width) -
-						 static_cast<int>(target_size.width);
-				int dy = static_cast<int>(s.height) -
-						 static_cast<int>(target_size.height);
-				return dx * dx + dy * dy;
-			};
-			int best_score = score(best);
-			for (const auto& s : sizes) {
-				int sc = score(s);
-				if (sc < best_score) {
-					best = s;
-					best_score = sc;
-				}
+	// Prefer 720p if available; otherwise pick the closest size to 1280x720.
+	const libcamera::Size target_size{640, 480};
+	std::vector<libcamera::Size> sizes = formats.sizes(cfg.pixelFormat);
+	if (!sizes.empty()) {
+		auto best = sizes.front();
+		auto score = [&](const libcamera::Size& s) {
+			int dx =
+				static_cast<int>(s.width) - static_cast<int>(target_size.width);
+			int dy = static_cast<int>(s.height) -
+					 static_cast<int>(target_size.height);
+			return dx * dx + dy * dy;
+		};
+		int best_score = score(best);
+		for (const auto& s : sizes) {
+			int sc = score(s);
+			if (sc < best_score) {
+				best = s;
+				best_score = sc;
 			}
-			cfg.size = best;
-		} else {
-			cfg.size.width = 1280;
-			cfg.size.height = 720;
 		}
+		cfg.size = best;
+	} else {
+		cfg.size.width = 640;
+		cfg.size.height = 480;
+	}
 	cfg.bufferCount = 4;
 	config->validate();
 
