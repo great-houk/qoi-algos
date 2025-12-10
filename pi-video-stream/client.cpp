@@ -287,6 +287,7 @@ int main() {
 		std::vector<uint8_t> pixels;  // RGB bytes
 		uint32_t width;
 		uint32_t height;
+		std::chrono::steady_clock::time_point captured;
 	};
 
 	std::deque<Frame> queue;
@@ -319,6 +320,7 @@ int main() {
 			f.width = static_cast<uint32_t>(cfg->size.width);
 			f.height = static_cast<uint32_t>(cfg->size.height);
 			f.pixels.resize(static_cast<size_t>(f.width) * f.height * 3);
+			f.captured = std::chrono::steady_clock::now();
 
 			for (auto& [stream_ptr, buffer] : request->buffers()) {
 				(void)stream_ptr;
@@ -401,17 +403,17 @@ int main() {
 		// Encode/send thread: pops frames, encodes with multi-core QOI, sends.
 		std::thread encode_thread([&]() {
 			while (running) {
-			Frame f;
-			{
-				std::unique_lock<std::mutex> lock(mtx);
-				cv_not_empty.wait(lock,
-								  [&] { return !running || !queue.empty(); });
-				if (!running && queue.empty())
-					break;
-				f = std::move(queue.front());
-				queue.pop_front();
-				cv_not_full.notify_one();
-			}
+				Frame f;
+				{
+					std::unique_lock<std::mutex> lock(mtx);
+					cv_not_empty.wait(lock,
+									  [&] { return !running || !queue.empty(); });
+					if (!running && queue.empty())
+						break;
+					f = std::move(queue.front());
+					queue.pop_front();
+					cv_not_full.notify_one();
+				}
 
 				QOIEncoderSpec spec{
 					f.width,
@@ -427,27 +429,42 @@ int main() {
 					std::chrono::duration<double, std::milli>(encode_end -
 															  encode_start)
 						.count();
-				std::cout << "Encoded frame in " << encode_ms << " ms"
-						  << std::endl;
+
+				auto send_start = std::chrono::steady_clock::now();
 				uint32_t payload_size = static_cast<uint32_t>(encoded.size());
 				uint32_t net_size = htonl(payload_size);
 
-			if (!send_all(client, reinterpret_cast<uint8_t*>(&net_size),
-						  sizeof(net_size))) {
-				std::cerr << "Failed to send frame length" << std::endl;
-				running = false;
-				cv_not_empty.notify_all();
-				break;
-			}
+				if (!send_all(client, reinterpret_cast<uint8_t*>(&net_size),
+							  sizeof(net_size))) {
+					std::cerr << "Failed to send frame length" << std::endl;
+					running = false;
+					cv_not_empty.notify_all();
+					break;
+				}
 
-			if (!send_all(client, encoded.data(), encoded.size())) {
-				std::cerr << "Failed to send frame payload" << std::endl;
-				running = false;
-				cv_not_empty.notify_all();
-				break;
+				if (!send_all(client, encoded.data(), encoded.size())) {
+					std::cerr << "Failed to send frame payload" << std::endl;
+					running = false;
+					cv_not_empty.notify_all();
+					break;
+				}
+				auto send_end = std::chrono::steady_clock::now();
+
+				double capture_to_encode_ms =
+					std::chrono::duration<double, std::milli>(encode_start - f.captured)
+						.count();
+				double send_ms =
+					std::chrono::duration<double, std::milli>(send_end - send_start)
+						.count();
+				double capture_to_send_ms =
+					std::chrono::duration<double, std::milli>(send_end - f.captured)
+						.count();
+				std::cout << "Timing: capture->encode_start=" << capture_to_encode_ms
+						  << " ms, encode=" << encode_ms << " ms, send=" << send_ms
+						  << " ms, capture->send=" << capture_to_send_ms << " ms"
+						  << std::endl;
 			}
-		}
-	});
+		});
 
 	std::cout << "Streaming frames..." << std::endl;
 
