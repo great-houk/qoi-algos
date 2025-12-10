@@ -17,11 +17,21 @@
 #include <cstring>
 #include <deque>
 #include <iostream>
+#include <map>
 #include <mutex>
 #include <thread>
 #include <vector>
 
-#include <opencv2/opencv.hpp>
+#ifndef _WIN32
+#include <sys/mman.h>
+#endif
+
+#include <libcamera/camera.h>
+#include <libcamera/camera_manager.h>
+#include <libcamera/control_ids.h>
+#include <libcamera/framebuffer_allocator.h>
+#include <libcamera/libcamera.h>
+#include <libcamera/stream.h>
 
 #include "../multi-cpu/qoi-mc.hpp"
 
@@ -104,19 +114,118 @@ int main() {
 		return -1;
 	}
 
-	cv::VideoCapture cap(0);
-	if (!cap.isOpened()) {
-		std::cerr << "Failed to open webcam" << std::endl;
+	// --- libcamera setup ---
+	libcamera::CameraManager cm;
+	if (cm.start()) {
+		std::cerr << "Failed to start CameraManager" << std::endl;
+		close_socket(client);
+		close_socket(server_fd);
+		cleanup_sockets();
+		return -1;
+	}
+	if (cm.cameras().empty()) {
+		std::cerr << "No cameras found" << std::endl;
+		cm.stop();
 		close_socket(client);
 		close_socket(server_fd);
 		cleanup_sockets();
 		return -1;
 	}
 
-	// Request modest capture settings to reduce buffer pressure on the Pi.
-	cap.set(cv::CAP_PROP_FRAME_WIDTH, 640);
-	cap.set(cv::CAP_PROP_FRAME_HEIGHT, 480);
-	cap.set(cv::CAP_PROP_FPS, 15);
+	std::shared_ptr<libcamera::Camera> camera = cm.cameras()[0];
+	if (!camera) {
+		std::cerr << "Failed to get camera" << std::endl;
+		cm.stop();
+		close_socket(client);
+		close_socket(server_fd);
+		cleanup_sockets();
+		return -1;
+	}
+
+	if (camera->acquire()) {
+		std::cerr << "Failed to acquire camera" << std::endl;
+		camera.reset();
+		cm.stop();
+		close_socket(client);
+		close_socket(server_fd);
+		cleanup_sockets();
+		return -1;
+	}
+
+	std::unique_ptr<libcamera::CameraConfiguration> config =
+		camera->generateConfiguration({libcamera::StreamRole::VideoRecording});
+	if (!config || config->size() == 0) {
+		std::cerr << "Failed to generate configuration" << std::endl;
+		camera->release();
+		camera.reset();
+		cm.stop();
+		close_socket(client);
+		close_socket(server_fd);
+		cleanup_sockets();
+		return -1;
+	}
+
+	libcamera::StreamConfiguration& cfg = config->at(0);
+	cfg.pixelFormat = libcamera::formats::RGB888;
+	cfg.size.width = 640;
+	cfg.size.height = 480;
+	cfg.bufferCount = 4;
+	config->validate();
+
+	if (camera->configure(config.get())) {
+		std::cerr << "Failed to configure camera" << std::endl;
+		camera->release();
+		camera.reset();
+		cm.stop();
+		close_socket(client);
+		close_socket(server_fd);
+		cleanup_sockets();
+		return -1;
+	}
+
+	libcamera::FrameBufferAllocator allocator(camera);
+	libcamera::Stream* stream = cfg.stream();
+	if (allocator.allocate(stream) < 0) {
+		std::cerr << "Failed to allocate buffers" << std::endl;
+		camera->release();
+		camera.reset();
+		cm.stop();
+		close_socket(client);
+		close_socket(server_fd);
+		cleanup_sockets();
+		return -1;
+	}
+
+	// Map buffers
+	struct MappedBuffer {
+		libcamera::FrameBuffer* fb;
+		std::vector<void*> mmaps;
+		std::vector<size_t> lengths;
+	};
+	std::map<libcamera::FrameBuffer*, MappedBuffer> buffer_map;
+
+	for (const std::unique_ptr<libcamera::FrameBuffer>& fb :
+		 allocator.buffers(stream)) {
+		MappedBuffer mb{fb.get(), {}, {}};
+		for (const auto& plane : fb->planes()) {
+			void* addr =
+				mmap(nullptr, plane.length, PROT_READ, MAP_SHARED, plane.fd.fd(),
+					 plane.offset);
+			if (addr == MAP_FAILED) {
+				std::cerr << "mmap failed" << std::endl;
+				camera->release();
+				camera.reset();
+				cm.stop();
+				close_socket(client);
+				close_socket(server_fd);
+				cleanup_sockets();
+				return -1;
+			}
+			mb.mmaps.push_back(addr);
+			mb.lengths.push_back(plane.length);
+		}
+		buffer_map[fb.get()] = std::move(mb);
+	}
 
 	struct Frame {
 		std::vector<uint8_t> pixels;  // RGB bytes
@@ -131,46 +240,82 @@ int main() {
 	const size_t kMaxQueue = 3;  // keep a small buffer to avoid lag
 	std::atomic<bool> running{true};
 
-	// Capture thread: grabs frames, converts to RGB, and enqueues raw pixels.
-	std::thread capture_thread([&]() {
-		while (running) {
-			cv::Mat frame;
-			if (!cap.read(frame)) {
-				std::cerr << "Failed to read frame from webcam" << std::endl;
-				running = false;
-				cv_not_empty.notify_all();
-				break;
-			}
+	MultiCPUQOI encoder;
 
-			cv::Mat rgb;
-			cv::cvtColor(frame, rgb, cv::COLOR_BGR2RGB);
+	camera->requestCompleted.connect(
+		[&](libcamera::Request* request) {
+			if (!running) return;
+			if (request->status() == libcamera::Request::RequestCancelled)
+				return;
 
 			Frame f;
-			f.width = static_cast<uint32_t>(rgb.cols);
-			f.height = static_cast<uint32_t>(rgb.rows);
-			size_t bytes = rgb.total() * rgb.elemSize();
-			f.pixels.resize(bytes);
-			if (rgb.isContinuous()) {
-				std::memcpy(f.pixels.data(), rgb.data, bytes);
-			} else {
-				size_t row_bytes = static_cast<size_t>(rgb.cols * rgb.elemSize());
-				for (int r = 0; r < rgb.rows; ++r) {
-					std::memcpy(f.pixels.data() + r * row_bytes,
-								rgb.ptr(r),
-								row_bytes);
-				}
+			f.width = static_cast<uint32_t>(cfg.size.width);
+			f.height = static_cast<uint32_t>(cfg.size.height);
+			f.pixels.resize(static_cast<size_t>(f.width) * f.height * 3);
+
+			for (auto& [stream_ptr, buffer] : request->buffers()) {
+				(void)stream_ptr;
+				auto it = buffer_map.find(buffer);
+				if (it == buffer_map.end()) continue;
+				MappedBuffer& mb = it->second;
+				const libcamera::FrameMetadata& md = buffer->metadata();
+				size_t bytes_used =
+					md.planes().empty() ? 0 : md.planes()[0].bytesused;
+				if (bytes_used == 0) bytes_used = f.pixels.size();
+				std::memcpy(f.pixels.data(), mb.mmaps[0],
+							std::min(bytes_used, f.pixels.size()));
 			}
 
-			std::unique_lock<std::mutex> lock(mtx);
-			cv_not_full.wait(lock, [&] { return !running || queue.size() < kMaxQueue; });
-			if (!running) break;
-			queue.push_back(std::move(f));
-			cv_not_empty.notify_one();
+			{
+				std::unique_lock<std::mutex> lock(mtx);
+				cv_not_full.wait(lock,
+								 [&] { return !running || queue.size() < kMaxQueue; });
+				if (!running) return;
+				queue.push_back(std::move(f));
+				cv_not_empty.notify_one();
+			}
+
+			request->reuse(libcamera::Request::ReuseBuffers);
+			camera->queueRequest(request);
+		});
+
+	std::vector<std::unique_ptr<libcamera::Request>> requests;
+	for (const std::unique_ptr<libcamera::FrameBuffer>& fb :
+		 allocator.buffers(stream)) {
+		std::unique_ptr<libcamera::Request> req = camera->createRequest();
+		if (!req) {
+			std::cerr << "Failed to create request" << std::endl;
+			running = false;
+			break;
 		}
-	});
+		if (req->addBuffer(stream, fb.get())) {
+			std::cerr << "Failed to add buffer to request" << std::endl;
+			running = false;
+			break;
+		}
+		// Set frame duration limits to target ~15 fps.
+		int64_t frame_time = 1000000000LL / 15;
+		req->controls().set(libcamera::controls::FrameDurationLimits,
+							libcamera::Span<const int64_t, 2>({frame_time, frame_time}));
+		requests.push_back(std::move(req));
+	}
+
+	if (running && camera->start()) {
+		std::cerr << "Failed to start camera" << std::endl;
+		running = false;
+	}
+
+	if (running) {
+		for (auto& req : requests) {
+			if (camera->queueRequest(req.get())) {
+				std::cerr << "Failed to queue request" << std::endl;
+				running = false;
+				break;
+			}
+		}
+	}
 
 	// Encode/send thread: pops frames, encodes with multi-core QOI, sends.
-	MultiCPUQOI encoder;
 	std::thread encode_thread([&]() {
 		while (running) {
 			Frame f;
@@ -217,7 +362,18 @@ int main() {
 	running = false;
 	cv_not_full.notify_all();
 	cv_not_empty.notify_all();
-	capture_thread.join();
+
+	if (camera) {
+		camera->stop();
+		for (auto& kv : buffer_map) {
+			for (size_t i = 0; i < kv.second.mmaps.size(); ++i) {
+				munmap(kv.second.mmaps[i], kv.second.lengths[i]);
+			}
+		}
+		camera->release();
+		camera.reset();
+	}
+	cm.stop();
 
 	close_socket(client);
 	close_socket(server_fd);

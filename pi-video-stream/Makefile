@@ -4,6 +4,8 @@ OS_NAME := $(shell uname -s 2>/dev/null || echo Windows_NT)
 # --- OpenCV discovery (pkg-config only) ---
 OPENCV_CFLAGS := $(shell pkg-config --cflags opencv4 2>/dev/null || pkg-config --cflags opencv 2>/dev/null)
 OPENCV_LIBS   := $(shell pkg-config --libs opencv4 2>/dev/null || pkg-config --libs opencv 2>/dev/null)
+LIBCAMERA_CFLAGS := $(shell pkg-config --cflags libcamera 2>/dev/null)
+LIBCAMERA_LIBS   := $(shell pkg-config --libs libcamera 2>/dev/null)
 
 # --- Platform-specific flags ---
 WSOCK_LIB =
@@ -14,8 +16,13 @@ else
 	PTHREAD_FLAG = -pthread
 endif
 
-CXXFLAGS = -std=c++17 -Wall -Wextra -O2 -fopenmp $(PTHREAD_FLAG) -I.. -I../multi-cpu $(OPENCV_CFLAGS)
-LDFLAGS  = $(WSOCK_LIB) $(OPENCV_LIBS) -fopenmp $(PTHREAD_FLAG)
+CXXFLAGS = -std=c++17 -Wall -Wextra -O2 -fopenmp $(PTHREAD_FLAG) -I.. -I../multi-cpu
+
+SERVER_CXXFLAGS = $(CXXFLAGS) $(OPENCV_CFLAGS)
+CLIENT_CXXFLAGS = $(CXXFLAGS) $(LIBCAMERA_CFLAGS)
+
+SERVER_LDFLAGS  = $(WSOCK_LIB) $(OPENCV_LIBS) -fopenmp $(PTHREAD_FLAG)
+CLIENT_LDFLAGS  = $(WSOCK_LIB) $(LIBCAMERA_LIBS) -fopenmp $(PTHREAD_FLAG)
 
 # Targets
 SERVER = server
@@ -37,10 +44,10 @@ all: $(SERVER) $(CLIENT)
 
 # Link binaries
 $(SERVER): $(SERVER_OBJ)
-	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
+	$(CXX) $(SERVER_CXXFLAGS) -o $@ $^ $(SERVER_LDFLAGS)
 
 $(CLIENT): $(CLIENT_OBJ)
-	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
+	$(CXX) $(CLIENT_CXXFLAGS) -o $@ $^ $(CLIENT_LDFLAGS)
 
 # Compile objects
 %.o: %.cpp
