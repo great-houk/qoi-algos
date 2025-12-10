@@ -249,45 +249,68 @@ int main() {
 
 	MultiCPUQOI encoder;
 
-	camera->requestCompleted.connect([&](libcamera::Request* request) {
-		if (!running)
-			return;
-		if (request->status() == libcamera::Request::RequestCancelled)
-			return;
+	struct RequestHandler {
+		libcamera::Camera* cam;
+		libcamera::StreamConfiguration* cfg;
+		std::map<libcamera::FrameBuffer*, MappedBuffer>* buffer_map;
+		std::deque<Frame>* queue;
+		std::mutex* mtx;
+		std::condition_variable* cv_not_full;
+		std::condition_variable* cv_not_empty;
+		const size_t* kMaxQueue;
+		std::atomic<bool>* running;
 
-		Frame f;
-		f.width = static_cast<uint32_t>(cfg.size.width);
-		f.height = static_cast<uint32_t>(cfg.size.height);
-		f.pixels.resize(static_cast<size_t>(f.width) * f.height * 3);
-
-		for (auto& [stream_ptr, buffer] : request->buffers()) {
-			(void)stream_ptr;
-			auto it = buffer_map.find(buffer);
-			if (it == buffer_map.end())
-				continue;
-			MappedBuffer& mb = it->second;
-			const libcamera::FrameMetadata& md = buffer->metadata();
-			size_t bytes_used =
-				md.planes().empty() ? 0 : md.planes()[0].bytesused;
-			if (bytes_used == 0)
-				bytes_used = f.pixels.size();
-			std::memcpy(f.pixels.data(), mb.mmaps[0],
-						std::min(bytes_used, f.pixels.size()));
-		}
-
-		{
-			std::unique_lock<std::mutex> lock(mtx);
-			cv_not_full.wait(
-				lock, [&] { return !running || queue.size() < kMaxQueue; });
-			if (!running)
+		void on_request_complete(libcamera::Request* request) {
+			if (!running->load())
 				return;
-			queue.push_back(std::move(f));
-			cv_not_empty.notify_one();
-		}
+			if (request->status() == libcamera::Request::RequestCancelled)
+				return;
 
-		request->reuse(libcamera::Request::ReuseBuffers);
-		camera->queueRequest(request);
-	});
+			Frame f;
+			f.width = static_cast<uint32_t>(cfg->size.width);
+			f.height = static_cast<uint32_t>(cfg->size.height);
+			f.pixels.resize(static_cast<size_t>(f.width) * f.height * 3);
+
+			for (auto& [stream_ptr, buffer] : request->buffers()) {
+				(void)stream_ptr;
+				auto it = buffer_map->find(buffer);
+				if (it == buffer_map->end())
+					continue;
+				MappedBuffer& mb = it->second;
+				const libcamera::FrameMetadata& md = buffer->metadata();
+				size_t bytes_used =
+					md.planes().empty() ? 0 : md.planes()[0].bytesused;
+				if (bytes_used == 0)
+					bytes_used = f.pixels.size();
+				std::memcpy(f.pixels.data(), mb.mmaps[0],
+							std::min(bytes_used, f.pixels.size()));
+			}
+
+			{
+				std::unique_lock<std::mutex> lock(*mtx);
+				cv_not_full->wait(
+					lock, [&] { return !running->load() || queue->size() < *kMaxQueue; });
+				if (!running->load())
+					return;
+				queue->push_back(std::move(f));
+				cv_not_empty->notify_one();
+			}
+
+			request->reuse(libcamera::Request::ReuseBuffers);
+			cam->queueRequest(request);
+		}
+	};
+
+	RequestHandler handler{camera.get(),
+						   &cfg,
+						   &buffer_map,
+						   &queue,
+						   &mtx,
+						   &cv_not_full,
+						   &cv_not_empty,
+						   &kMaxQueue,
+						   &running};
+	camera->requestCompleted.connect(&handler, &RequestHandler::on_request_complete);
 
 	std::vector<std::unique_ptr<libcamera::Request>> requests;
 	for (const std::unique_ptr<libcamera::FrameBuffer>& fb :
