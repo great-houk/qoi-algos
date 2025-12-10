@@ -24,6 +24,8 @@
 #include <chrono>
 #include <algorithm>
 #include <cerrno>
+#include <iomanip>
+#include <array>
 
 #ifndef _WIN32
 #include <sys/mman.h>
@@ -207,6 +209,9 @@ int main() {
 	cfg.bufferCount = 4;
 	config->validate();
 
+	std::cout << "Configured stream: format=" << cfg.pixelFormat.toString()
+			  << " size=" << cfg.size.width << "x" << cfg.size.height << std::endl;
+
 	if (camera->configure(config.get())) {
 		std::cerr << "Failed to configure camera" << std::endl;
 		camera->release();
@@ -387,11 +392,15 @@ int main() {
 			running = false;
 			break;
 		}
-			// Set frame duration limits to target ~10 fps.
-			int64_t frame_time = 1000000000LL / 10;
-		req->controls().set(
-			libcamera::controls::FrameDurationLimits,
-			libcamera::Span<const int64_t, 2>({frame_time, frame_time}));
+			// Set frame duration limits to target ~30 fps to force faster cadence.
+			int64_t frame_time = 1000000000LL / 30;
+			std::array<int64_t, 2> limits{frame_time, frame_time};
+			req->controls().set(libcamera::controls::FrameDurationLimits,
+								libcamera::Span<const int64_t, 2>(limits));
+			// Clamp exposure to stay within the desired frame time.
+			req->controls().set(libcamera::controls::ExposureTime,
+								std::max<int64_t>(1000, frame_time - 1000000));
+			req->controls().set(libcamera::controls::AeEnable, false);
 		requests.push_back(std::move(req));
 	}
 
