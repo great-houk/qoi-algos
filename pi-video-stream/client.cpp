@@ -378,12 +378,15 @@ int main() {
 						   &running};
 	camera->requestCompleted.connect(&handler, &RequestHandler::on_request_complete);
 
-	std::vector<std::unique_ptr<libcamera::Request>> requests;
-	for (const std::unique_ptr<libcamera::FrameBuffer>& fb :
-		 allocator.buffers(stream)) {
-		std::unique_ptr<libcamera::Request> req = camera->createRequest();
-		if (!req) {
-			std::cerr << "Failed to create request" << std::endl;
+		const int64_t frame_time_us = 1000000LL / 30;  // ~33.3 ms
+		const int64_t exposure_us = std::max<int64_t>(500, frame_time_us - 1000);
+
+		std::vector<std::unique_ptr<libcamera::Request>> requests;
+		for (const std::unique_ptr<libcamera::FrameBuffer>& fb :
+			 allocator.buffers(stream)) {
+			std::unique_ptr<libcamera::Request> req = camera->createRequest();
+			if (!req) {
+				std::cerr << "Failed to create request" << std::endl;
 			running = false;
 			break;
 		}
@@ -392,22 +395,33 @@ int main() {
 			running = false;
 			break;
 		}
-			// Set frame duration limits to target ~30 fps to force faster cadence.
-			int64_t frame_time = 1000000000LL / 30;
-			std::array<int64_t, 2> limits{frame_time, frame_time};
+			// Units are microseconds for these controls.
+			std::array<int64_t, 2> limits{frame_time_us, frame_time_us};
 			req->controls().set(libcamera::controls::FrameDurationLimits,
 								libcamera::Span<const int64_t, 2>(limits));
-			// Clamp exposure to stay within the desired frame time.
-			req->controls().set(libcamera::controls::ExposureTime,
-								std::max<int64_t>(1000, frame_time - 1000000));
+			req->controls().set(libcamera::controls::ExposureTime, exposure_us);
 			req->controls().set(libcamera::controls::AeEnable, false);
-		requests.push_back(std::move(req));
-	}
+			requests.push_back(std::move(req));
+		}
 
-	if (running && camera->start()) {
-		std::cerr << "Failed to start camera" << std::endl;
-		running = false;
-	}
+		if (running) {
+			libcamera::ControlList start_controls(camera->controls());
+			start_controls.set(libcamera::controls::FrameDurationLimits,
+							   libcamera::Span<const int64_t, 2>(
+								   std::array<int64_t, 2>{frame_time_us, frame_time_us}));
+			start_controls.set(libcamera::controls::ExposureTime, exposure_us);
+			start_controls.set(libcamera::controls::AeEnable, false);
+
+			if (camera->start(&start_controls)) {
+				std::cerr << "Failed to start camera" << std::endl;
+				running = false;
+			}
+		}
+
+		if (running && !camera->isRunning()) {
+			std::cerr << "Failed to start camera" << std::endl;
+			running = false;
+		}
 
 	if (running) {
 		for (auto& req : requests) {
