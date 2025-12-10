@@ -35,6 +35,7 @@
 #include <libcamera/camera_manager.h>
 #include <libcamera/control_ids.h>
 #include <libcamera/framebuffer_allocator.h>
+#include <libcamera/formats.h>
 #include <libcamera/libcamera.h>
 #include <libcamera/stream.h>
 
@@ -328,6 +329,7 @@ int main() {
 		const size_t* kMaxQueue;
 		std::atomic<bool>* running;
 		std::chrono::steady_clock::time_point last_capture{};
+		bool bgr_to_rgb{false};
 
 		void on_request_complete(libcamera::Request* request) {
 			if (!running->load())
@@ -366,6 +368,12 @@ int main() {
 							std::min(bytes_used, f.pixels.size()));
 			}
 
+			if (bgr_to_rgb) {
+				for (size_t i = 0; i + 2 < f.pixels.size(); i += 3) {
+					std::swap(f.pixels[i], f.pixels[i + 2]);
+				}
+			}
+
 			{
 				std::unique_lock<std::mutex> lock(*mtx);
 				if (queue->size() >= *kMaxQueue) {
@@ -386,6 +394,7 @@ int main() {
 	RequestHandler handler{camera.get(),  &cfg,		  &buffer_map,
 						   &queue,		  &mtx,		  &cv_not_full,
 						   &cv_not_empty, &kMaxQueue, &running};
+	handler.bgr_to_rgb = cfg.pixelFormat == libcamera::formats::BGR888;
 	camera->requestCompleted.connect(&handler,
 									 &RequestHandler::on_request_complete);
 
